@@ -1,0 +1,21 @@
+version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  build:
+    desc: Build the go binary with optimized flags
+    cmds:
+      - go build -ldflags="-w -s" -o keybase-obsidian-bot
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./... -v
+
+  clean:
+    desc: Remove the compiled binary
+    cmds:
+      - rm -f keybase-obsidian-bot

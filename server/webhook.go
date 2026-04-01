@@ -1,0 +1,113 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+
+	"github.com/hoshposh/keybase-obsidian-bot/handler"
+)
+
+type FeedlyEntry struct {
+	Title         string `json:"title"`
+	EntryURL      string `json:"entryUrl"`
+	Content       string `json:"content"`
+	Author        string `json:"author"`
+	PublishedDate int64  `json:"publishedDate"`
+}
+
+type WebhookServer struct {
+	Handler *handler.MessageHandler
+	Secret  string
+}
+
+// FeedlyAuthMiddleware ensures the request has the correct HMAC-SHA256 signature.
+func (ws *WebhookServer) FeedlyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if ws.Secret != "" {
+			// 1. Get the signature from the header
+			signature := r.Header.Get("X-Feedly-Signature")
+			if signature == "" {
+				http.Error(w, "Missing signature", http.StatusUnauthorized)
+				return
+			}
+
+			// 2. Read the raw body (important: keep it for the next handler)
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Failed to read body", http.StatusInternalServerError)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+			// 3. Calculate expected HMAC
+			h := hmac.New(sha256.New, []byte(ws.Secret))
+			h.Write(bodyBytes)
+			expectedSignature := hex.EncodeToString(h.Sum(nil))
+
+			// 4. Constant-time comparison to prevent timing attacks
+			if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
+				http.Error(w, "Invalid signature", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
+
+func (ws *WebhookServer) FeedlyHandler(w http.ResponseWriter, r *http.Request) {
+	var entry FeedlyEntry
+	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
+		http.Error(w, "Bad Request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Received Feedly Article: %s", entry.Title)
+
+	// Map Feedly JSON into an Obsidian Markdown template (simulating a !link message)
+	content := fmt.Sprintf("!link ### [%s](%s)\n**Author:** %s\n\n%s\n",
+		entry.Title, entry.EntryURL, entry.Author, entry.Content)
+
+	if err := ws.Handler.Handle(context.Background(), content); err != nil {
+		log.Printf("Failed to process Feedly webhook: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func StartWebhookServer(port int, secret string, h *handler.MessageHandler) *http.Server {
+	ws := &WebhookServer{
+		Handler: h,
+		Secret:  secret,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webhooks/feedly", ws.FeedlyAuthMiddleware(ws.FeedlyHandler))
+
+	addr := fmt.Sprintf(":%d", port)
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	go func() {
+		log.Printf("Starting webhook server on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Webhook server failed: %v", err)
+		}
+	}()
+	
+	return srv
+}
