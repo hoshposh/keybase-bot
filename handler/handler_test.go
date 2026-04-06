@@ -21,66 +21,73 @@ func (m *mockMCPClient) CallTool(ctx context.Context, name string, args map[stri
 }
 
 func TestHandle(t *testing.T) {
+	mockTime := func() time.Time {
+		return time.Date(2026, 4, 6, 12, 0, 0, 0, time.UTC)
+	}
+	expectedHeading := "\n## 2026-04-06\n\n"
+
 	t.Run("Note prefix", func(t *testing.T) {
 		m := &mockMCPClient{}
 		h := NewMessageHandler("/vault", m)
+		h.Now = mockTime
 
 		err := h.Handle(context.Background(), "!note Hello World")
 		require.NoError(t, err)
 
-		assert.Equal(t, "append_content", m.calledName)
+		assert.Equal(t, "write_note", m.calledName)
 		assert.Equal(t, "Inbox.md", m.calledArgs["path"])
-		assert.Equal(t, "Hello World\n", m.calledArgs["content"])
+		assert.Equal(t, expectedHeading+"Hello World\n", m.calledArgs["content"])
 	})
 
 	t.Run("Todo prefix", func(t *testing.T) {
 		m := &mockMCPClient{}
 		h := NewMessageHandler("/vault", m)
+		h.Now = mockTime
 
 		err := h.Handle(context.Background(), "!todo Buy milk")
 		require.NoError(t, err)
 
-		assert.Equal(t, "append_content", m.calledName)
+		assert.Equal(t, "write_note", m.calledName)
 		assert.Equal(t, "Tasks.md", m.calledArgs["path"])
-		assert.Equal(t, "- [ ] Buy milk\n", m.calledArgs["content"])
+		assert.Equal(t, expectedHeading+"- [ ] Buy milk\n", m.calledArgs["content"])
 	})
 
 	t.Run("Link prefix", func(t *testing.T) {
 		m := &mockMCPClient{}
 		h := NewMessageHandler("/vault", m)
+		h.Now = mockTime
 
 		err := h.Handle(context.Background(), "!link https://example.com")
 		require.NoError(t, err)
 
-		assert.Equal(t, "append_content", m.calledName)
+		assert.Equal(t, "write_note", m.calledName)
 		assert.Equal(t, "Links.md", m.calledArgs["path"])
-		assert.Equal(t, "https://example.com\n", m.calledArgs["content"])
+		assert.Equal(t, expectedHeading+" - <https://example.com>\n", m.calledArgs["content"])
 	})
 
 	t.Run("Automatic link detection", func(t *testing.T) {
 		m := &mockMCPClient{}
 		h := NewMessageHandler("/vault", m)
+		h.Now = mockTime
 
 		err := h.Handle(context.Background(), "https://google.com")
 		require.NoError(t, err)
 
-		assert.Equal(t, "append_content", m.calledName)
+		assert.Equal(t, "write_note", m.calledName)
 		assert.Equal(t, "Links.md", m.calledArgs["path"])
-		assert.Equal(t, "https://google.com\n", m.calledArgs["content"])
+		assert.Equal(t, expectedHeading+" - <https://google.com>\n", m.calledArgs["content"])
 	})
 
 	t.Run("No prefix", func(t *testing.T) {
 		m := &mockMCPClient{}
 		h := NewMessageHandler("/vault", m)
-		h.Now = func() time.Time {
-			return time.Date(2026, 3, 22, 12, 0, 0, 0, time.UTC)
-		}
+		h.Now = mockTime
 
 		err := h.Handle(context.Background(), "Just a random thought")
 		require.NoError(t, err)
 
-		assert.Equal(t, "append_content", m.calledName)
-		assert.Equal(t, "Daily/2026-03-22.md", m.calledArgs["path"])
+		assert.Equal(t, "write_note", m.calledName)
+		assert.Equal(t, "Daily/2026-04-06.md", m.calledArgs["path"])
 		assert.Equal(t, "Just a random thought\n", m.calledArgs["content"])
 	})
 
