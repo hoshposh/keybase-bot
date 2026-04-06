@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -46,10 +47,10 @@ func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
 		content = "- [ ] " + strings.TrimPrefix(msg, "!todo ")
 		destFile = "Tasks.md"
 	} else if strings.HasPrefix(msg, "!link ") {
-		content = strings.TrimPrefix(msg, "!link ")
+		content = " - <" + strings.TrimPrefix(msg, "!link ") + ">"
 		destFile = "Links.md"
 	} else if (strings.HasPrefix(msg, "http://") || strings.HasPrefix(msg, "https://")) && !strings.Contains(msg, " ") {
-		content = msg
+		content = " - <" + msg + ">"
 		destFile = "Links.md"
 	} else {
 		content = msg
@@ -58,16 +59,77 @@ func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
 		destFile = filepath.Join("Daily", dateStr+".md")
 	}
 
-	// Call mcpvault tool to append content
-	// We use "append_content" as the generic MCP tool name for modifying files
-	args := map[string]interface{}{
-		"path":    destFile,
-		"content": content + "\n",
+	// Check if this is a daily note
+	isDaily := strings.HasPrefix(destFile, "Daily")
+	dateStr := h.Now().Format("2006-01-02")
+	headingQuery := fmt.Sprintf("## %s", dateStr)
+
+	// Keep track of our write mode (append vs overwrite)
+	mode := "append"
+	
+	// Read existing file via MCP
+	readArgs := map[string]interface{}{"path": destFile}
+	fileBytes, err := h.MCPClient.CallTool(ctx, "read_note", readArgs)
+	fileStr := ""
+	var fileFm map[string]interface{}
+	
+	if err == nil {
+		// mcpvault's read_note returns a JSON-encoded string combining frontmatter and content
+		var parsedNote struct {
+			Content string                 `json:"content"`
+			Fm      map[string]interface{} `json:"fm"`
+		}
+		if parseErr := json.Unmarshal(fileBytes, &parsedNote); parseErr == nil {
+			fileStr = parsedNote.Content
+			fileFm = parsedNote.Fm
+		} else {
+			fileStr = string(fileBytes) // fallback
+		}
 	}
 
-	_, err := h.MCPClient.CallTool(ctx, "append_content", args)
+	// 1. Deduplicate & Move logic (skip for Daily notes)
+	if !isDaily && fileStr != "" && strings.Contains(fileStr, strings.TrimSpace(content)) {
+		// We found the content! Clean it out from the old document lines
+		lines := strings.Split(fileStr, "\n")
+		var cleaned []string
+		for _, line := range lines {
+			if strings.TrimSpace(line) != strings.TrimSpace(content) {
+				cleaned = append(cleaned, line)
+			}
+		}
+		fileStr = strings.Join(cleaned, "\n")
+		mode = "overwrite" // Since we mutated the existing history, we must overwrite
+	}
+
+	// 2. Heading Injection logic
+	if !isDaily {
+		if fileStr == "" || !strings.Contains(fileStr, headingQuery) {
+			content = fmt.Sprintf("\n%s\n\n%s", headingQuery, content)
+		}
+	}
+
+	// 3. Final MCP push
+	args := map[string]interface{}{
+		"path": destFile,
+	}
+
+	if fileFm != nil && len(fileFm) > 0 {
+		args["frontmatter"] = fileFm
+	}
+
+	if mode == "overwrite" {
+		// Append our updated content to the cleaned file memory
+		args["content"] = strings.TrimSpace(fileStr) + "\n" + content + "\n"
+		args["mode"] = "overwrite"
+	} else {
+		// Simple atomic append to the bottom of the file
+		args["content"] = content + "\n"
+		args["mode"] = "append"
+	}
+
+	_, err = h.MCPClient.CallTool(ctx, "write_note", args)
 	if err != nil {
-		return fmt.Errorf("failed to call MCP append_content for %s: %w", destFile, err)
+		return fmt.Errorf("failed to call MCP write_note (%s) for %s: %w", mode, destFile, err)
 	}
 
 	return nil

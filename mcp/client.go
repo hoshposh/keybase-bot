@@ -53,7 +53,11 @@ func NewClient(ctx context.Context, serverCmd []string, vaultPath string) (*Clie
 		return nil, fmt.Errorf("empty server command")
 	}
 
-	cmd := exec.CommandContext(ctx, serverCmd[0], serverCmd[1:]...)
+	args := serverCmd[1:]
+	if vaultPath != "" {
+		args = append(args, vaultPath)
+	}
+	cmd := exec.CommandContext(ctx, serverCmd[0], args...)
 	cmd.Env = append(os.Environ(), "OBSIDIAN_VAULT_PATH="+vaultPath)
 	
 	stdin, err := cmd.StdinPipe()
@@ -234,8 +238,9 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]inte
 	}
 	
 	// resp.Result should be a CallToolResult
-	// {"content": [{"type": "text", "text": "result"}]}
+	// {"content": [{"type": "text", "text": "result"}], "isError": false}
 	var result struct {
+		IsError bool `json:"isError"`
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -244,6 +249,15 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]inte
 	
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		return resp.Result, nil // Return raw if doesn't match standard tool result format
+	}
+
+	// MCP officially uses the isError flag to indicate tool failure without throwing a JSON-RPC level error.
+	if result.IsError {
+		errMsg := "MCP Tool returned an error"
+		if len(result.Content) > 0 {
+			errMsg = result.Content[0].Text
+		}
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 	
 	if len(result.Content) > 0 {
