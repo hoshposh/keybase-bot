@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/hoshposh/keybase-obsidian-bot/server"
 	"github.com/hoshposh/keybase-obsidian-bot/sync"
 	"github.com/keybase/go-keybase-chat-bot/kbchat"
+	"github.com/keybase/go-keybase-chat-bot/kbchat/types/chat1"
 )
 
 type Config struct {
@@ -30,6 +33,26 @@ type Config struct {
 	WebhookSecret       string `json:"webhookSecret"`
 	SyncRemote          string `json:"syncRemote"`
 	SyncIntervalMinutes int    `json:"syncIntervalMinutes"`
+}
+
+type BotState struct {
+	LastMessageID chat1.MessageID `json:"lastMessageId"`
+}
+
+func loadState(path string) BotState {
+	var s BotState
+	data, err := os.ReadFile(path)
+	if err == nil {
+		json.Unmarshal(data, &s)
+	}
+	return s
+}
+
+func saveState(path string, s BotState) {
+	data, err := json.Marshal(s)
+	if err == nil {
+		os.WriteFile(path, data, 0644)
+	}
 }
 
 func main() {
@@ -143,6 +166,47 @@ func main() {
 		log.Fatalf("Error starting Keybase chat client: %v", err)
 	}
 
+	stateFile := filepath.Join(*vaultPath, ".keybase_bot_state.json")
+	botState := loadState(stateFile)
+
+	channel := chat1.ChatChannel{
+		Name: fmt.Sprintf("%s,%s", *botUsername, *allowedSender),
+	}
+
+	missedMessages, err := kbc.GetTextMessages(channel, false)
+	if err != nil {
+		log.Printf("Warning: failed to get message history: %v", err)
+	} else {
+		// Messages usually from newest to oldest or vice versa. Let's process ones > LastMessageID chronologically.
+		// So we collect and process them in order of MsgID ascending.
+		var toProcess []chat1.MsgSummary
+		for _, m := range missedMessages {
+			if m.Id > botState.LastMessageID && m.Sender.Username == *allowedSender && m.Content.TypeName == "text" {
+				toProcess = append(toProcess, m)
+			}
+		}
+		// Sort just in case
+		for i := 0; i < len(toProcess); i++ {
+			for j := i + 1; j < len(toProcess); j++ {
+				if toProcess[i].Id > toProcess[j].Id {
+					toProcess[i], toProcess[j] = toProcess[j], toProcess[i]
+				}
+			}
+		}
+
+		for _, m := range toProcess {
+			body := m.Content.Text.Body
+			log.Printf("Processing missed Keybase message (ID: %d): '%s'", m.Id, body)
+			if err := msgHandler.Handle(ctx, body); err != nil {
+				log.Printf("Error handling missed Keybase message '%s': %v", body, err)
+			} else {
+				log.Printf("Successfully handled missed Keybase message '%s'", body)
+				botState.LastMessageID = m.Id
+				saveState(stateFile, botState)
+			}
+		}
+	}
+
 	sub, err := kbc.ListenForNewTextMessages()
 	if err != nil {
 		log.Fatalf("Error listening for messages: %v", err)
@@ -187,6 +251,11 @@ func main() {
 			log.Printf("Error handling Keybase message '%s': %v", body, err)
 		} else {
 			log.Printf("Successfully handled Keybase message '%s'", body)
+			// Update state
+			if msg.Message.Id > botState.LastMessageID {
+				botState.LastMessageID = msg.Message.Id
+				saveState(stateFile, botState)
+			}
 		}
 	}
 }
