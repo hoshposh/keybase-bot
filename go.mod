@@ -3,7 +3,7 @@ module github.com/hoshposh/keybase-obsidian-bot
 go 1.26.2
 
 require (
-	github.com/charmbracelet/log v1.0.0
+	github.com/charmbracelet/log/v2 v2.0.0
 	github.com/keybase/go-keybase-chat-bot v0.0.0-20260323181222-96da9efa9eec
 	github.com/stretchr/testify v1.11.1
 )
