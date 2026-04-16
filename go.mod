@@ -1,9 +1,9 @@
 module github.com/hoshposh/keybase-obsidian-bot
 
-go 1.26.1
+go 1.26.2
 
 require (
-	github.com/keybase/go-keybase-chat-bot v0.0.0-20260219200631-78cfe8e51557
+	github.com/keybase/go-keybase-chat-bot v0.0.0-20260323181222-96da9efa9eec
 	github.com/stretchr/testify v1.11.1
 )
 
