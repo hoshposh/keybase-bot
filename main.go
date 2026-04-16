@@ -238,6 +238,7 @@ func main() {
 		log.Fatalf("Error listening for messages: %v", err)
 	}
 
+	printDashboard(*botUsername, *allowedSender, *vaultPath, *webhookPort, *webhookSecret, *syncRemote)
 	log.Printf("Listening for Keybase messages... (allowed sender: %s)", *allowedSender)
 
 	sigChan := make(chan os.Signal, 1)
