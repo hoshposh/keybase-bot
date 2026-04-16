@@ -175,3 +175,7 @@ systemctl --user daemon-reload
 systemctl --user enable keybase-obsidian-bot.service
 systemctl --user start keybase-obsidian-bot.service
 ```
+
+## Dependency Management
+
+This repository uses [Renovate](https://docs.renovatebot.com/) to track out-of-date external dependencies. When new versions of dependencies or modules are released, Renovate will automatically open Pull Requests to keep the project up-to-date and apply any necessary `go mod tidy` actions.
