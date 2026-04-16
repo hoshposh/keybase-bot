@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2026 Lyndon Washington
+ * Licensed under the MIT License. See LICENSE in the project root for license information.
+ */
+
 package handler
 
 import (
@@ -113,7 +118,7 @@ func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
 		"path": destFile,
 	}
 
-	if fileFm != nil && len(fileFm) > 0 {
+	if len(fileFm) > 0 {
 		args["frontmatter"] = fileFm
 	}
 
