@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	"github.com/charmbracelet/log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -224,7 +224,7 @@ func main() {
 
 	go func() {
 		<-sigChan
-		log.Println("Shutting down...")
+		log.Print("Shutting down...")
 		cancel() // context cancellation will shut down mcp, http, and sync loop
 		cleanup()
 		

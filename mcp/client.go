@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"github.com/charmbracelet/log"
 	"os"
 	"os/exec"
 	"sync"

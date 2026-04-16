@@ -14,7 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"github.com/charmbracelet/log"
 	"net/http"
 
 	"github.com/hoshposh/keybase-obsidian-bot/handler"

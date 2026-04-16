@@ -7,7 +7,7 @@ package sync
 
 import (
 	"context"
-	"log"
+	"github.com/charmbracelet/log"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -32,7 +32,7 @@ func NewDriveSync(vaultPath, remote string, interval time.Duration) *DriveSync {
 // Start begins the synchronization loop. It blocks until the context is canceled.
 func (s *DriveSync) Start(ctx context.Context) {
 	if s.Remote == "" {
-		log.Println("Drive sync remote is empty, sync loop disabled.")
+		log.Print("Drive sync remote is empty, sync loop disabled.")
 		return
 	}
 
@@ -49,7 +49,7 @@ func (s *DriveSync) Start(ctx context.Context) {
 		case <-ticker.C:
 			go s.performSync(ctx)
 		case <-ctx.Done():
-			log.Println("Stopping Google Drive sync loop")
+			log.Print("Stopping Google Drive sync loop")
 			return
 		}
 	}
