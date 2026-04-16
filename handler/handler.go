@@ -16,7 +16,7 @@ import (
 
 // MCPClient defines the interface for calling MCP tools
 type MCPClient interface {
-	CallTool(ctx context.Context, name string, args map[string]interface{}) ([]byte, error)
+	CallTool(ctx context.Context, name string, args map[string]any) ([]byte, error)
 }
 
 // MessageHandler handles routing incoming messages to the appropriate Obsidian file via MCP.
@@ -45,14 +45,14 @@ func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
 	var destFile string
 	var content string
 
-	if strings.HasPrefix(msg, "!note ") {
-		content = strings.TrimPrefix(msg, "!note ")
+	if after, ok := strings.CutPrefix(msg, "!note "); ok {
+		content = after
 		destFile = "Inbox.md"
-	} else if strings.HasPrefix(msg, "!todo ") {
-		content = "- [ ] " + strings.TrimPrefix(msg, "!todo ")
+	} else if after, ok := strings.CutPrefix(msg, "!todo "); ok {
+		content = "- [ ] " + after
 		destFile = "Tasks.md"
-	} else if strings.HasPrefix(msg, "!link ") {
-		content = " - <" + strings.TrimPrefix(msg, "!link ") + ">"
+	} else if after, ok := strings.CutPrefix(msg, "!link "); ok {
+		content = " - <" + after + ">"
 		destFile = "Links.md"
 	} else if (strings.HasPrefix(msg, "http://") || strings.HasPrefix(msg, "https://")) && !strings.Contains(msg, " ") {
 		content = " - <" + msg + ">"
@@ -71,18 +71,18 @@ func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
 
 	// Keep track of our write mode (append vs overwrite)
 	mode := "append"
-	
+
 	// Read existing file via MCP
-	readArgs := map[string]interface{}{"path": destFile}
+	readArgs := map[string]any{"path": destFile}
 	fileBytes, err := h.MCPClient.CallTool(ctx, "read_note", readArgs)
 	fileStr := ""
-	var fileFm map[string]interface{}
-	
+	var fileFm map[string]any
+
 	if err == nil {
 		// mcpvault's read_note returns a JSON-encoded string combining frontmatter and content
 		var parsedNote struct {
-			Content string                 `json:"content"`
-			Fm      map[string]interface{} `json:"fm"`
+			Content string         `json:"content"`
+			Fm      map[string]any `json:"fm"`
 		}
 		if parseErr := json.Unmarshal(fileBytes, &parsedNote); parseErr == nil {
 			fileStr = parsedNote.Content
@@ -114,7 +114,7 @@ func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
 	}
 
 	// 3. Final MCP push
-	args := map[string]interface{}{
+	args := map[string]any{
 		"path": destFile,
 	}
 

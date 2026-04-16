@@ -16,10 +16,10 @@ import (
 
 type mockMCPClient struct {
 	calledName string
-	calledArgs map[string]interface{}
+	calledArgs map[string]any
 }
 
-func (m *mockMCPClient) CallTool(ctx context.Context, name string, args map[string]interface{}) ([]byte, error) {
+func (m *mockMCPClient) CallTool(ctx context.Context, name string, args map[string]any) ([]byte, error) {
 	m.calledName = name
 	m.calledArgs = args
 	return []byte("success"), nil
