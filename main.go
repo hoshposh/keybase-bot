@@ -75,8 +75,29 @@ func main() {
 	webhookSecret := flag.String("webhook-secret", "", "Secret token for Feedly webhooks authorization")
 	syncRemote := flag.String("sync-remote", "", "rclone remote path for sync, e.g., 'gdrive:Research'")
 	syncInterval := flag.Duration("sync-interval", 15*time.Minute, "Interval for sync loop")
+	setupFlag := flag.Bool("setup", false, "Run the interactive setup wizard")
 
 	flag.Parse()
+
+	if *setupFlag {
+		runSetup()
+		return
+	}
+
+	if flag.NFlag() == 0 {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			defaultPath := filepath.Join(homeDir, ".config", "keybase-bot", "config.json")
+			if _, err := os.Stat(defaultPath); err == nil {
+				*configPath = defaultPath
+				log.Infof("No flags provided; automatically loading default config from %s", defaultPath)
+			}
+		}
+	}
+
+	if flag.NFlag() == 0 && *configPath == "" {
+		log.Fatal("No configuration arguments provided. Please run explicitly with -setup to launch the configuration wizard, or provide required flags.")
+	}
 
 	// Parse config from KBFS or other file if provided
 	if *configPath != "" {
