@@ -23,6 +23,13 @@ type FeedlyEntry struct {
 	PublishedDate int64  `json:"publishedDate"`
 }
 
+type GenericPayload struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Content string `json:"content"`
+	Source  string `json:"source"`
+}
+
 type WebhookServer struct {
 	Handler *handler.MessageHandler
 	Secret  string
@@ -90,6 +97,54 @@ func (ws *WebhookServer) FeedlyHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// GenericAuthMiddleware ensures the request has the correct Bearer token.
+func (ws *WebhookServer) GenericAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if ws.Secret != "" {
+			expectedToken := "Bearer " + ws.Secret
+			token := r.Header.Get("Authorization")
+			if token != expectedToken {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
+
+func (ws *WebhookServer) GenericHandler(w http.ResponseWriter, r *http.Request) {
+	var payload GenericPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Bad Request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Received Generic Webhook: %s", payload.Title)
+
+	source := payload.Source
+	if source == "" {
+		source = "Webhook"
+	}
+
+	// Map generic JSON into an Obsidian Markdown template (simulating a !link message)
+	content := fmt.Sprintf("!link ### [%s](%s)\n**Source:** %s\n\n%s\n",
+		payload.Title, payload.URL, source, payload.Content)
+
+	if err := ws.Handler.Handle(context.Background(), content); err != nil {
+		log.Printf("Failed to process generic webhook: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func StartWebhookServer(port int, secret string, h *handler.MessageHandler) *http.Server {
 	ws := &WebhookServer{
 		Handler: h,
@@ -98,6 +153,7 @@ func StartWebhookServer(port int, secret string, h *handler.MessageHandler) *htt
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhooks/feedly", ws.FeedlyAuthMiddleware(ws.FeedlyHandler))
+	mux.HandleFunc("/webhooks/generic", ws.GenericAuthMiddleware(ws.GenericHandler))
 
 	addr := fmt.Sprintf(":%d", port)
 	srv := &http.Server{Addr: addr, Handler: mux}

@@ -83,16 +83,30 @@ You can alternatively pass a single JSON config file (e.g., stored securely in y
 
 ## Feedly Webhook Setup & Cloudflare Tunnel
 
-To connect Feedly to your locally-running bot, you need to expose the local HTTP server to the internet using a tunnel like Cloudflare Tunnel (`cloudflared`).
+To connect Feedly to your locally-running bot, you need to securely expose the local HTTP server to the internet. We recommend using a **Cloudflare Tunnel**, which allows you to expose the local service without opening inbound firewall ports or needing a static public IP. The daemon establishes an outbound-only connection to Cloudflare's edge, keeping your server hidden and protected from direct external access.
 
-1. Install `cloudflared`.
-2. Run `cloudflared` to expose the webhook port (default `8080`):
-   ```bash
-   cloudflared tunnel --url http://localhost:8080
-   ```
-3. Copy the generated `https://` URL.
-4. Go to your Feedly Developer Dashboard -> Webhooks.
-5. Add a new webhook:
+### 1. Setting up `cloudflared`
+
+- **[Installation Guide](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)**: Download and install the `cloudflared` client.
+- **[Tunnels Overview](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)**: Learn how Cloudflare Tunnels securely route traffic.
+
+You can test the tunnel quickly by running:
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+*(Make sure to copy the generated `https://` URL from the output)*
+
+For permanent setups (so the tunnel survives machine reboots), it is highly recommended to **[Run cloudflared as a service](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/as-a-service/)**:
+```bash
+sudo cloudflared service install <your-tunnel-token>
+sudo systemctl enable --now cloudflared
+```
+
+### 2. Configuring the Webhook
+
+Once your tunnel is running:
+1. Go to your Feedly Developer Dashboard -> Webhooks.
+2. Add a new webhook:
    - **URL**: `<YOUR_CLOUDFLARED_URL>/webhooks/feedly`
    - **Event Type**: `NewEntrySaved`
    - **Authorization Header**: Bearer token matching your `-webhook-secret`.
@@ -101,6 +115,37 @@ You can test the webhook locally without Feedly using the provided script:
 ```bash
 ./scripts/test_feedly.sh 8080 my-super-secret
 ```
+
+## Generic Webhook Integration
+
+If you don't have Feedly Pro (which is required for native webhooks) or want to integrate other tools, the bot also exposes a generic webhook endpoint at `/webhooks/generic`.
+
+This endpoint accepts a simpler Bearer token format for authentication instead of Feedly's HMAC signature, making it compatible with almost any automation tool.
+
+### Supported Integrations
+Because it relies on standard HTTP POST requests, you can trigger this endpoint using:
+- **Make.com** (Free tier available, excellent Feedly/RSS integration)
+- **Zapier** or **Pipedream**
+- **IFTTT** (Using the Webhooks / "Make a Web Request" action)
+- **iOS Shortcuts** (Using "Get contents of URL")
+- Any custom script or application
+
+### How to use it:
+1. **URL**: `POST <YOUR_CLOUDFLARED_URL>/webhooks/generic`
+2. **Headers**:
+   - `Content-Type: application/json`
+   - `Authorization: Bearer <your-webhook-secret>`
+3. **Body (JSON)**:
+```json
+{
+  "title": "Article Title",
+  "url": "https://example.com/article",
+  "content": "Optional excerpt or summary...",
+  "source": "Make.com"
+}
+```
+
+*Note: The `source` field is optional and defaults to "Webhook".*
 
 ## Systemd Service Configuration
 
