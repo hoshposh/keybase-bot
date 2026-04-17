@@ -11,11 +11,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"github.com/charmbracelet/log"
 	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
+
+	"charm.land/log/v2"
 )
 
 // Client is a minimal JSON-RPC client over stdio for communicating with an MCP server

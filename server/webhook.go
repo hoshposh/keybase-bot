@@ -14,8 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"github.com/charmbracelet/log"
 	"net/http"
+
+	"charm.land/log/v2"
 
 	"github.com/hoshposh/keybase-obsidian-bot/handler"
 )
@@ -169,6 +170,6 @@ func StartWebhookServer(port int, secret string, h *handler.MessageHandler) *htt
 			log.Fatalf("Webhook server failed: %v", err)
 		}
 	}()
-	
+
 	return srv
 }

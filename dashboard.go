@@ -8,7 +8,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 func printDashboard(bot, allowed, vault string, webhookPort int, webhookSecret string, syncRemote string) {
@@ -36,7 +36,7 @@ func printDashboard(bot, allowed, vault string, webhookPort int, webhookSecret s
 	rows += labelStyle.Render("Bot User:") + valueStyle.Render(bot) + "\n"
 	rows += labelStyle.Render("Allowed:") + valueStyle.Render(allowed) + "\n"
 	rows += labelStyle.Render("Vault Path:") + valueStyle.Render(vault) + "\n"
-	
+
 	webhookStr := fmt.Sprintf("Port %d", webhookPort)
 	if webhookSecret == "" {
 		webhookStr += offStyle.Render(" (No Auth Secret Set)")

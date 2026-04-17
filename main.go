@@ -10,13 +10,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/charmbracelet/log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
+
+	"charm.land/log/v2"
 
 	"github.com/hoshposh/keybase-obsidian-bot/handler"
 	"github.com/hoshposh/keybase-obsidian-bot/mcp"
@@ -110,17 +111,39 @@ func main() {
 			log.Fatalf("Failed to parse config file: %v", err)
 		}
 
-		if c.VaultPath != "" { *vaultPath = c.VaultPath }
-		if c.BotUsername != "" { *botUsername = c.BotUsername }
-		if c.SecretPath != "" { *secretPath = c.SecretPath }
-		if c.AllowedSender != "" { *allowedSender = c.AllowedSender }
-		if c.HomeDir != "" { *homeDir = c.HomeDir }
-		if c.KeepHome { *keepHome = c.KeepHome }
-		if c.MCPCmd != "" { *mcpCmdLine = c.MCPCmd }
-		if c.WebhookPort != 0 { *webhookPort = c.WebhookPort }
-		if c.WebhookSecret != "" { *webhookSecret = c.WebhookSecret }
-		if c.SyncRemote != "" { *syncRemote = c.SyncRemote }
-		if c.SyncIntervalMinutes != 0 { *syncInterval = time.Duration(c.SyncIntervalMinutes) * time.Minute }
+		if c.VaultPath != "" {
+			*vaultPath = c.VaultPath
+		}
+		if c.BotUsername != "" {
+			*botUsername = c.BotUsername
+		}
+		if c.SecretPath != "" {
+			*secretPath = c.SecretPath
+		}
+		if c.AllowedSender != "" {
+			*allowedSender = c.AllowedSender
+		}
+		if c.HomeDir != "" {
+			*homeDir = c.HomeDir
+		}
+		if c.KeepHome {
+			*keepHome = c.KeepHome
+		}
+		if c.MCPCmd != "" {
+			*mcpCmdLine = c.MCPCmd
+		}
+		if c.WebhookPort != 0 {
+			*webhookPort = c.WebhookPort
+		}
+		if c.WebhookSecret != "" {
+			*webhookSecret = c.WebhookSecret
+		}
+		if c.SyncRemote != "" {
+			*syncRemote = c.SyncRemote
+		}
+		if c.SyncIntervalMinutes != 0 {
+			*syncInterval = time.Duration(c.SyncIntervalMinutes) * time.Minute
+		}
 	}
 
 	if *vaultPath == "" || *botUsername == "" || *secretPath == "" || *allowedSender == "" {
@@ -249,12 +272,12 @@ func main() {
 		log.Print("Shutting down...")
 		cancel() // context cancellation will shut down mcp, http, and sync loop
 		cleanup()
-		
+
 		// shutdown http server gracefully
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		httpServer.Shutdown(shutdownCtx)
-		
+
 		os.Exit(0)
 	}()
 
@@ -268,7 +291,7 @@ func main() {
 		if msg.Message.Sender.Username != *allowedSender {
 			continue // Ignore messages from other senders
 		}
-		
+
 		if msg.Message.Content.TypeName != "text" {
 			continue
 		}

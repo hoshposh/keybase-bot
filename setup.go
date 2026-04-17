@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/log"
+	"charm.land/log/v2"
+	"charm.land/huh/v2"
 )
 
 func runSetup() {
