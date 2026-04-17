@@ -7,10 +7,11 @@ package sync
 
 import (
 	"context"
-	"github.com/charmbracelet/log"
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"charm.land/log/v2"
 )
 
 // DriveSync manages periodic synchronization of a local directory to a remote via rclone.
@@ -62,7 +63,7 @@ func (s *DriveSync) performSync(ctx context.Context) {
 	// Command: rclone sync /path/to/Research remote
 	// Adding --create-empty-src-dirs to ensure correct replication
 	cmd := exec.CommandContext(ctx, "rclone", "sync", researchDir, s.Remote, "--create-empty-src-dirs")
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("rclone sync failed: %v\nOutput: %s", err, string(output))
