@@ -45,6 +45,8 @@ type BotState struct {
 	LastMessageID chat1.MessageID `json:"lastMessageId"`
 }
 
+var version = "dev"
+
 func loadState(path string) BotState {
 	var s BotState
 	data, err := os.ReadFile(path)
@@ -62,6 +64,7 @@ func saveState(path string, s BotState) {
 }
 
 func main() {
+	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	configPath := flag.String("config", "", "Path to a JSON config file (e.g., in KBFS) to override other flags")
 	vaultPath := flag.String("vault", "", "Path to the Obsidian Vault")
 	botUsername := flag.String("bot-username", "", "Bot Username")
@@ -79,6 +82,11 @@ func main() {
 	setupFlag := flag.Bool("setup", false, "Run the interactive setup wizard")
 
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("keybase-bot version %s\n", version)
+		return
+	}
 
 	if *setupFlag {
 		runSetup()
