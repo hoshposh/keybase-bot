@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +30,8 @@ import (
 )
 
 type Config struct {
+	Role                string `json:"role"`
+	JobChannel          string `json:"jobChannel"`
 	VaultPath           string `json:"vaultPath"`
 	BotUsername         string `json:"botUsername"`
 	SecretPath          string `json:"secretPath"`
@@ -41,8 +45,19 @@ type Config struct {
 	SyncIntervalMinutes int    `json:"syncIntervalMinutes"`
 }
 
+type KeybaseTeamDispatcher struct {
+	kbc     *kbchat.API
+	channel chat1.ChatChannel
+}
+
+func (k *KeybaseTeamDispatcher) Handle(ctx context.Context, msg string) error {
+	_, err := k.kbc.SendMessage(k.channel, "%s", msg)
+	return err
+}
+
 type BotState struct {
 	LastMessageID chat1.MessageID `json:"lastMessageId"`
+	Channel       string          `json:"channel,omitempty"`
 }
 
 var version = "dev"
@@ -81,6 +96,10 @@ func main() {
 	syncInterval := flag.Duration("sync-interval", 15*time.Minute, "Interval for sync loop")
 	setupFlag := flag.Bool("setup", false, "Run the interactive setup wizard")
 
+	// Role splitting flags
+	roleFlag := flag.String("role", "standalone", "Role to run: 'standalone', 'ingestor', or 'executor'")
+	jobChannelFlag := flag.String("job-channel", "", "Keybase team channel for jobs (e.g. 'myteam.jobs'). Required for executor and ingestor roles.")
+
 	flag.Parse()
 
 	if *versionFlag {
@@ -89,7 +108,7 @@ func main() {
 	}
 
 	if *setupFlag {
-		runSetup()
+		runSetup(*configPath)
 		return
 	}
 
@@ -119,6 +138,12 @@ func main() {
 			log.Fatalf("Failed to parse config file: %v", err)
 		}
 
+		if c.Role != "" && *roleFlag == "standalone" {
+			*roleFlag = c.Role
+		}
+		if c.JobChannel != "" {
+			*jobChannelFlag = c.JobChannel
+		}
 		if c.VaultPath != "" {
 			*vaultPath = c.VaultPath
 		}
@@ -154,34 +179,38 @@ func main() {
 		}
 	}
 
-	if *vaultPath == "" || *botUsername == "" || *secretPath == "" || *allowedSender == "" {
-		log.Fatal("All core configuration properties (-vault, -bot-username, -secret-path, -allowed-sender) are required")
+	if *botUsername == "" || *secretPath == "" {
+		log.Fatal("-bot-username and -secret-path are required")
+	}
+
+	isStandalone := *roleFlag == "standalone"
+	isIngestor := *roleFlag == "ingestor"
+	isExecutor := *roleFlag == "executor"
+
+	if !isStandalone && !isIngestor && !isExecutor {
+		log.Fatal("-role must be 'standalone', 'ingestor', or 'executor'")
+	}
+
+	if isStandalone || isExecutor {
+		if *vaultPath == "" {
+			log.Fatal("-vault is required for standalone and executor roles")
+		}
+	}
+	if isStandalone || isIngestor {
+		if *allowedSender == "" {
+			log.Fatal("-allowed-sender is required for standalone and ingestor roles")
+		}
+	}
+	if isIngestor || isExecutor {
+		if *jobChannelFlag == "" {
+			log.Fatal("-job-channel is required for ingestor and executor roles")
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Setup MCP Client
-	cmdParts := strings.Fields(*mcpCmdLine)
-	mcpClient, err := mcp.NewClient(ctx, cmdParts, *vaultPath)
-	if err != nil {
-		log.Fatalf("Failed to initialize MCP Client: %v", err)
-	}
-	defer mcpClient.Close()
-	log.Printf("MCP client initialized successfully.")
-
-	// 2. Setup Message Handler (now using MCP)
-	msgHandler := handler.NewMessageHandler(*vaultPath, mcpClient)
-
-	// 3. Setup Webhook server (Feedly)
-	httpServer := server.StartWebhookServer(*webhookPort, *webhookSecret, msgHandler)
-
-	// 4. Setup Google Drive Sync Loop
-	if *syncRemote != "" {
-		driveSync := sync.NewDriveSync(*vaultPath, *syncRemote, *syncInterval)
-		go driveSync.Start(ctx)
-	}
-
+	// Extract keybase setup logic to be common
 	// 5. Setup Keybase Listeners
 	paperKeyBytes, err := os.ReadFile(*secretPath)
 	if err != nil {
@@ -223,14 +252,111 @@ func main() {
 		log.Fatalf("Error starting Keybase chat client: %v", err)
 	}
 
-	stateFile := filepath.Join(*vaultPath, ".keybase_bot_state.json")
-	botState := loadState(stateFile)
+	var dispatcher server.MessageDispatcher
+	var msgHandler *handler.MessageHandler
+	var httpServer *http.Server
 
-	channel := chat1.ChatChannel{
-		Name: fmt.Sprintf("%s,%s", *botUsername, *allowedSender),
+	if isStandalone || isExecutor {
+		cmdParts := strings.Fields(*mcpCmdLine)
+		mcpClient, err := mcp.NewClient(ctx, cmdParts, *vaultPath)
+		if err != nil {
+			log.Fatalf("Failed to initialize MCP Client: %v", err)
+		}
+		defer mcpClient.Close()
+		log.Printf("MCP client initialized successfully.")
+
+		msgHandler = handler.NewMessageHandler(*vaultPath, mcpClient)
+		dispatcher = msgHandler
+
+		if *syncRemote != "" {
+			driveSync := sync.NewDriveSync(*vaultPath, *syncRemote, *syncInterval)
+			go driveSync.Start(ctx)
+		}
 	}
 
-	missedMessages, err := kbc.GetTextMessages(channel, false)
+	var parseJobChannel = func(full string) chat1.ChatChannel {
+		parts := strings.SplitN(full, ".", 2)
+		if len(parts) == 2 {
+			return chat1.ChatChannel{
+				Name:        parts[0],
+				TopicName:   parts[1],
+				MembersType: "team",
+			}
+		}
+		return chat1.ChatChannel{Name: full}
+	}
+
+	if isIngestor {
+		dispatcher = &KeybaseTeamDispatcher{
+			kbc:     kbc,
+			channel: parseJobChannel(*jobChannelFlag),
+		}
+	}
+
+	if isStandalone || isIngestor {
+		httpServer = server.StartWebhookServer(*webhookPort, *webhookSecret, dispatcher)
+	}
+
+	var stateFile string
+	var botState BotState
+	if isStandalone || isExecutor {
+		stateFile = filepath.Join(*vaultPath, ".keybase_bot_state.json")
+	} else if isIngestor {
+		if *configPath != "" {
+			stateFile = filepath.Join(filepath.Dir(*configPath), ".keybase_ingestor_state.json")
+		} else {
+			homeDir, _ := os.UserHomeDir()
+			configDir := filepath.Join(homeDir, ".config", "keybase-bot")
+			os.MkdirAll(configDir, 0755)
+			stateFile = filepath.Join(configDir, ".keybase_ingestor_state.json")
+		}
+	}
+	botState = loadState(stateFile)
+
+	var listenChannel chat1.ChatChannel
+	if isStandalone || isIngestor {
+		listenChannel = chat1.ChatChannel{
+			Name: fmt.Sprintf("%s,%s", *botUsername, *allowedSender),
+		}
+	} else {
+		// executor listens on job channel
+		listenChannel = parseJobChannel(*jobChannelFlag)
+	}
+
+	if listenChannel.MembersType == "team" {
+		log.Printf("Ensuring bot is joined to team channel %s#%s...", listenChannel.Name, listenChannel.TopicName)
+		if _, err := kbc.JoinChannel(listenChannel.Name, listenChannel.TopicName); err != nil {
+			log.Printf("Note: failed to explicitly join channel (it might be a small team or you lack permissions): %v", err)
+		}
+	}
+
+	listenChannelKey := listenChannel.Name
+	if listenChannel.TopicName != "" {
+		listenChannelKey += "#" + listenChannel.TopicName
+	}
+
+	if stateFile != "" {
+		if botState.Channel != "" && botState.Channel != listenChannelKey {
+			log.Printf("Detected job channel switched from %s to %s. Resetting LastMessageID sequence.", botState.Channel, listenChannelKey)
+			botState.LastMessageID = 0
+		}
+		botState.Channel = listenChannelKey
+		saveState(stateFile, botState)
+	}
+
+	channelMatch := func(a, b chat1.ChatChannel) bool {
+		if a.MembersType == "team" || b.MembersType == "team" {
+			return a.Name == b.Name && a.TopicName == b.TopicName
+		}
+		// DMs are returned as comma separated strings which can differ in order
+		an := strings.Split(a.Name, ",")
+		bn := strings.Split(b.Name, ",")
+		sort.Strings(an)
+		sort.Strings(bn)
+		return strings.Join(an, ",") == strings.Join(bn, ",")
+	}
+
+	missedMessages, err := kbc.GetTextMessages(listenChannel, false)
 	if err != nil {
 		log.Printf("Warning: failed to get message history: %v", err)
 	} else {
@@ -238,7 +364,8 @@ func main() {
 		// So we collect and process them in order of MsgID ascending.
 		var toProcess []chat1.MsgSummary
 		for _, m := range missedMessages {
-			if m.Id > botState.LastMessageID && m.Sender.Username == *allowedSender && m.Content.TypeName == "text" {
+			validSender := isExecutor || (m.Sender.Username == *allowedSender)
+			if stateFile != "" && m.Id > botState.LastMessageID && validSender && m.Content.TypeName == "text" {
 				toProcess = append(toProcess, m)
 			}
 		}
@@ -254,12 +381,14 @@ func main() {
 		for _, m := range toProcess {
 			body := m.Content.Text.Body
 			log.Printf("Processing missed Keybase message (ID: %d): '%s'", m.Id, body)
-			if err := msgHandler.Handle(ctx, body); err != nil {
+			if err := dispatcher.Handle(ctx, body); err != nil {
 				log.Printf("Error handling missed Keybase message '%s': %v", body, err)
 			} else {
 				log.Printf("Successfully handled missed Keybase message '%s'", body)
-				botState.LastMessageID = m.Id
-				saveState(stateFile, botState)
+				if stateFile != "" {
+					botState.LastMessageID = m.Id
+					saveState(stateFile, botState)
+				}
 			}
 		}
 	}
@@ -269,8 +398,10 @@ func main() {
 		log.Fatalf("Error listening for messages: %v", err)
 	}
 
-	printDashboard(*botUsername, *allowedSender, *vaultPath, *webhookPort, *webhookSecret, *syncRemote)
-	log.Printf("Listening for Keybase messages... (allowed sender: %s)", *allowedSender)
+	if isStandalone {
+		printDashboard(*botUsername, *allowedSender, *vaultPath, *webhookPort, *webhookSecret, *syncRemote)
+	}
+	log.Printf("Listening for Keybase messages on role: %s...", *roleFlag)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -281,10 +412,12 @@ func main() {
 		cancel() // context cancellation will shut down mcp, http, and sync loop
 		cleanup()
 
-		// shutdown http server gracefully
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		httpServer.Shutdown(shutdownCtx)
+		if httpServer != nil {
+			// shutdown http server gracefully
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			httpServer.Shutdown(shutdownCtx)
+		}
 
 		os.Exit(0)
 	}()
@@ -296,8 +429,16 @@ func main() {
 			continue
 		}
 
-		if msg.Message.Sender.Username != *allowedSender {
+		if !isExecutor && msg.Message.Sender.Username != *allowedSender {
 			continue // Ignore messages from other senders
+		}
+
+		if msg.Message.Channel.Name == "" {
+			continue
+		}
+
+		if !channelMatch(msg.Message.Channel, listenChannel) {
+			continue // Ignore messages in other channels not configured for this listener
 		}
 
 		if msg.Message.Content.TypeName != "text" {
@@ -305,12 +446,12 @@ func main() {
 		}
 
 		body := msg.Message.Content.Text.Body
-		if err := msgHandler.Handle(ctx, body); err != nil {
+		if err := dispatcher.Handle(ctx, body); err != nil {
 			log.Printf("Error handling Keybase message '%s': %v", body, err)
 		} else {
 			log.Printf("Successfully handled Keybase message '%s'", body)
 			// Update state
-			if msg.Message.Id > botState.LastMessageID {
+			if stateFile != "" && msg.Message.Id > botState.LastMessageID {
 				botState.LastMessageID = msg.Message.Id
 				saveState(stateFile, botState)
 			}

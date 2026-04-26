@@ -17,9 +17,11 @@ import (
 	"net/http"
 
 	"charm.land/log/v2"
-
-	"github.com/hoshposh/keybase-obsidian-bot/handler"
 )
+
+type MessageDispatcher interface {
+	Handle(ctx context.Context, msg string) error
+}
 
 type FeedlyEntry struct {
 	Title         string `json:"title"`
@@ -37,7 +39,7 @@ type GenericPayload struct {
 }
 
 type WebhookServer struct {
-	Handler *handler.MessageHandler
+	Handler MessageDispatcher
 	Secret  string
 }
 
@@ -151,7 +153,7 @@ func (ws *WebhookServer) GenericHandler(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusOK)
 }
 
-func StartWebhookServer(port int, secret string, h *handler.MessageHandler) *http.Server {
+func StartWebhookServer(port int, secret string, h MessageDispatcher) *http.Server {
 	ws := &WebhookServer{
 		Handler: h,
 		Secret:  secret,

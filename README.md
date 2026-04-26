@@ -16,6 +16,91 @@ A lightweight Go headless service to bridge messages from Keybase and Feedly to 
     - No prefix appends to `[VaultPath]/Daily/YYYY-MM-DD.md`
 - **Google Drive Sync**: Automatically syncs your `/Research` directory to Google Drive (for NotebookLM grounding) securely via `rclone`.
 
+## Deployment Architecture (Roles)
+
+The bot can be executed in three different deployment modes via the `-role` flag, allowing you to establish a secure, remote-friendly architecture:
+
+1. **Standalone** (`-role=standalone`): The default mode. Runs all features (Webhooks, Keybase Listeners, MCP, and Sync) in a single local process.
+2. **Cloud Ingestor** (`-role=ingestor`): A secure gateway designed to run on a cloud server. It exposes the webhook HTTP server and forwards inbound payload data straight into a specified Keybase Team Channel. It does not perform any local MCP or Vault commands.
+3. **Local Executor** (`-role=executor`): Runs locally behind your firewall. It listens to the Keybase Team Channel for "jobs" sent by the Ingestor and safely executes those payloads into your local Obsidian Vault using MCP.
+
+By splitting the architecture, your Vault remains entirely air-gapped from the public Internet while you can still host the webhook ingestor anywhere.
+
+## Keybase Setup Guide
+
+Whether you run in standalone or split mode, you need Keybase bot accounts and paper keys. If using the split `ingestor` and `executor` roles, you will also need a dedicated Keybase team channel to bridge them.
+
+### 1. Create the Keybase Bot Accounts
+
+> [!NOTE]
+> If you are setting up the split architecture with two separate bot accounts (e.g., `my_bot_ingest` and `my_bot_exec`), **you must run these 4 steps twice**—once for each bot to generate their unique paper keys.
+
+To go from "No Bot" to having a **Paper Key** ready for your Go code, follow this specific command-line sequence. We recommend using a temporary home directory (`/tmp/bot_home`) during this process to ensure the bot's setup doesn't interfere with your personal Keybase session.
+
+#### Step 1: Generate the Authorization Token
+First, as your **main user**, generate the token that gives you permission to create a bot.
+```bash
+keybase bot token create > /tmp/bot_token.txt
+```
+*(This saves a base64 string to a temporary file).*
+
+#### Step 2: Create the Bot Account
+Now, run the signup command. We use `--home` to keep it isolated and `--standalone` so it doesn't try to start a permanent background service yet.
+```bash
+keybase --home=/tmp/bot_home --standalone bot signup \
+    -u my_bot_ingest \
+    -t $(cat /tmp/bot_token.txt) > /tmp/bot_paper_key.txt
+```
+Keybase creates the account `@my_bot_ingest` and saves your new **Paper Key** to `/tmp/bot_paper_key.txt`.
+
+#### Step 3: Capture the Paper Key
+Open that file and copy the multi-word phrase inside.
+```bash
+cat /tmp/bot_paper_key.txt
+```
+> [!WARNING]
+> This is the only time this key is shown. If you lose it, you lose access to the bot account. **Copy it now** and store it in your KBFS private folder (or pass it via the `-secret-path` flag to authenticate your instances).
+
+#### Step 4: Clean Up
+Delete the temporary files from your `/tmp` directory securely.
+```bash
+rm /tmp/bot_token.txt /tmp/bot_paper_key.txt
+rm -rf /tmp/bot_home
+```
+
+### 2. Create the Job Channel (Split Architecture)
+
+To implement the **Satellite Pattern** correctly, use a Keybase Team. Teams provide the persistence and administrative control needed to keep your Cloud Ingestor and Local Executor in sync securely.
+
+#### Step 1: Create a Private Team
+First, create a dedicated team for your automation (e.g. `my_automation`).
+```bash
+keybase team create my_automation
+```
+
+#### Step 2: Create the Communication Channel
+By default, every team has a `#general` channel. It is better to create a specific channel for the bot traffic to keep it clean.
+```bash
+keybase chat send --channel '#vault-ingress' my_automation "Initializing bot channel..."
+```
+
+#### Step 3: Add the Two Bot Accounts
+Add both your Cloud Bot and your Local Bot to this team with specific security roles.
+
+- **For the Cloud Ingestor (Bot):**
+  This role allows the bot to write payloads efficiently and resolve channel names cryptographically without granting it full human administrative `writer` rights over the team files.
+  ```bash
+  keybase team add-member my_automation --user my_bot_ingest --role bot
+  ```
+
+- **For the Local Executor (Writer):**
+  This bot remains local and requires full "Writer" permissions to continuously read the history and dequeue the processed messages.
+  ```bash
+  keybase team add-member my_automation --user my_bot_exec --role writer
+  ```
+
+When you launch the binaries, you will supply this channel string (e.g., `my_automation.vault-ingress`) as the `-job-channel` argument.
+
 ## Prerequisites
 
 1. **MCP Server**: You must have `mcpvault` installed globally or available in the path:
@@ -39,20 +124,29 @@ Other available tasks:
 ## Running
 
 You will need the following information to run the bot:
-- `-vault`: The absolute path to your Obsidian vault.
+- `-role`: (Optional) The deployment role. One of `standalone`, `ingestor`, or `executor`. Default is `standalone`.
+- `-job-channel`: (Required for `ingestor`/`executor`) The Keybase team and channel where jobs are passed (e.g., `myteam.jobs`).
+- `-vault`: (Required for `standalone`/`executor`) The absolute path to your Obsidian vault.
 - `-bot-username`: The username of the Keybase bot/account.
 - `-secret-path`: The file path to a text file containing exactly the Keybase Paper Key.
-- `-allowed-sender`: The Keybase username of the person allowed to send commands to the bot.
+- `-allowed-sender`: (Required for `standalone`/`ingestor`) The Keybase username of the person allowed to send commands to the bot.
 - `-mcp-cmd`: (Optional) The command to run the MCP server. Default is `npx -y @bitbonsai/mcpvault`.
 - `-webhook-port`: (Optional) Port for the Feedly webhook HTTP server. Default is `8080`.
 - `-webhook-secret`: (Optional) A shared secret token to expect in the `Authorization: Bearer <secret>` header from Feedly.
 - `-sync-remote`: (Optional) If provided, initiates a background rclone sync loop. Example: `gdrive:ObsidianResearch`.
 - `-sync-interval`: (Optional) Duration between syncs. Default is `15m`.
 
-You can run the bot by passing CLI arguments:
+You can easily step through a configuration wizard that will generate your `config.json` by running:
+
+```bash
+./keybase-obsidian-bot -setup
+```
+
+Or you can run the bot bypassing the wizard entirely via CLI arguments:
 
 ```bash
 ./keybase-obsidian-bot \
+  -role="standalone" \
   -vault="/path/to/vault" \
   -bot-username="mybot" \
   -secret-path="/path/to/paperkey.txt" \
@@ -67,6 +161,8 @@ You can alternatively pass a single JSON config file (e.g., stored securely in y
 
 ```json
 {
+  "role": "standalone",
+  "jobChannel": "",
   "vaultPath": "/path/to/vault",
   "botUsername": "mybot",
   "secretPath": "/path/to/paperkey.txt",
