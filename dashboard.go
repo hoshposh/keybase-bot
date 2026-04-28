@@ -30,7 +30,7 @@ func printDashboard(bot, allowed, vault string, webhookPort int, webhookSecret s
 		MarginTop(1).
 		MarginBottom(1)
 
-	title := titleStyle.Render("Keybase Obsidian Bot")
+	title := titleStyle.Render("Umbilical")
 
 	var rows string
 	rows += labelStyle.Render("Bot User:") + valueStyle.Render(bot) + "\n"
