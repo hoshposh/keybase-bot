@@ -101,7 +101,7 @@ func NewClient(ctx context.Context, serverCmd []string, vaultPath string) (*Clie
 	initParams := map[string]any{
 		"protocolVersion": "2024-11-05", // Standard MCP protocol version
 		"clientInfo": map[string]string{
-			"name":    "keybase-obsidian-bot",
+			"name":    "umbilical",
 			"version": "1.0.0",
 		},
 		"capabilities": map[string]any{},

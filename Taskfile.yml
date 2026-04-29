@@ -8,7 +8,7 @@ tasks:
   build:
     desc: Build the go binary with optimized flags
     cmds:
-      - go build -ldflags="-w -s" -o keybase-obsidian-bot
+      - go build -ldflags="-w -s" -o umbilical
 
   test:
     desc: Run unit tests
@@ -18,4 +18,4 @@ tasks:
   clean:
     desc: Remove the compiled binary
     cmds:
-      - rm -f keybase-obsidian-bot
+      - rm -f umbilical

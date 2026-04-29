@@ -14,9 +14,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
-	"charm.land/log/v2"
 	"charm.land/huh/v2"
+	"charm.land/log/v2"
+	"github.com/gorilla/websocket"
 )
 
 func runSetup(initialConfigPath string) {
@@ -24,46 +26,31 @@ func runSetup(initialConfigPath string) {
 	var enableWebhooks bool
 	var enableSync bool
 	var autoProvision bool
-	var teamName string
-	var channelName string
-
-	keybaseInstalled := false
-	if _, err := exec.LookPath("keybase"); err == nil {
-		keybaseInstalled = true
-	}
 
 	homeDir, _ := os.UserHomeDir()
-	defaultConfigPath := filepath.Join(homeDir, ".config", "keybase-bot", "config.json")
+	defaultConfigPath := filepath.Join(homeDir, ".config", "umbilical", "config.json")
 	var configPath = defaultConfigPath
 
 	if initialConfigPath != "" {
 		configPath = initialConfigPath
 	}
 
-	// Try to load defaults if the file already exists
+	if c.Role == "" {
+		c.Role = "standalone"
+	}
+
 	if data, err := os.ReadFile(configPath); err == nil {
 		if err := json.Unmarshal(data, &c); err == nil {
 			log.Infof("Pre-filling wizard with existing config from %s", configPath)
 			if c.Role == "" {
 				c.Role = "standalone"
 			}
-			// basic heuristic to determine if we should turn on the confims
 			if c.WebhookPort != 0 || c.WebhookSecret != "" {
 				enableWebhooks = true
 			}
 			if c.SyncRemote != "" || c.SyncIntervalMinutes != 0 {
 				enableSync = true
 			}
-		}
-	} else {
-		c.Role = "standalone"
-	}
-
-	if c.JobChannel != "" {
-		parts := strings.SplitN(c.JobChannel, ".", 2)
-		teamName = parts[0]
-		if len(parts) > 1 {
-			channelName = parts[1]
 		}
 	}
 
@@ -76,7 +63,7 @@ func runSetup(initialConfigPath string) {
 		syncIntervalStr = strconv.Itoa(c.SyncIntervalMinutes)
 	}
 
-	log.Print("Welcome to the Keybase Obsidian Bot Setup Wizard!")
+	log.Print("Welcome to the Umbilical Setup Wizard!")
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -92,52 +79,29 @@ func runSetup(initialConfigPath string) {
 		),
 		huh.NewGroup(
 			huh.NewConfirm().
-				Title("Auto-Provision Keybase Bots & Infrastructure?").
-				Description("I can automatically create your bots and channels using the local Keybase CLI.").
+				Title("Auto-Provision SimpleX Chat Background Daemon?").
+				Description("I can automatically launch simplex-chat and generate a profile + address.").
 				Value(&autoProvision),
-		).WithHideFunc(func() bool { return !keybaseInstalled }),
+		),
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Keybase Bot Username").
-				Description("Username for the Keybase bot (2-15 chars, alphanumeric or underscores)").
-				Value(&c.BotUsername).
+				Title("SimpleX Bot Profile Name").
+				Description("Profile directory name for the bot (e.g. 'mybot')").
+				Value(&c.BotProfile).
 				Validate(func(s string) error {
 					if len(s) < 2 || len(s) > 15 {
-						return fmt.Errorf("username must be between 2 and 15 characters")
+						return fmt.Errorf("profile must be between 2 and 15 characters")
 					}
 					if !regexp.MustCompile(`^[a-zA-Z0-9_]+$`).MatchString(s) {
-						return fmt.Errorf("username can only contain letters, numbers, and underscores")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				TitleFunc(func() string {
-					if autoProvision {
-						return "Keybase Paper Key Directory"
-					}
-					return "Keybase Paper Key Path"
-				}, &autoProvision).
-				DescriptionFunc(func() string {
-					if autoProvision {
-						return "Directory to save the new paper key (e.g. /home/user/)"
-					}
-					return "Path to a file containing your existing bot's paper key"
-				}, &autoProvision).
-				Value(&c.SecretPath).
-				Validate(func(s string) error {
-					if s == "" {
-						if autoProvision {
-							return fmt.Errorf("directory path cannot be empty")
-						}
-						return fmt.Errorf("secret path cannot be empty")
+						return fmt.Errorf("profile can only contain letters, numbers, and underscores")
 					}
 					return nil
 				}),
 		),
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Allowed Sender Username").
-				Description("Keybase username allowed to message the bot").
+				Title("Allowed Sender Display Name").
+				Description("SimpleX sender allowed to trigger commands (your phone)").
 				Value(&c.AllowedSender).
 				Validate(func(s string) error {
 					if s == "" {
@@ -150,27 +114,17 @@ func runSetup(initialConfigPath string) {
 		}),
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Keybase Team Name").
-				Description("Keybase team for internal jobs (e.g. 'my_automation')").
-				Value(&teamName).
+				Title("Executor SimpleX Address").
+				Description("The contact address of the executor (https://smp... or https://simplex.chat/contact...)").
+				Value(&c.ExecutorAddress).
 				Validate(func(s string) error {
-					if len(s) < 2 || len(s) > 16 {
-						return fmt.Errorf("team name must be between 2 and 16 characters")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("Keybase Channel Name").
-				Description("Channel within the team (e.g. 'vault-ingress')").
-				Value(&channelName).
-				Validate(func(s string) error {
-					if s == "" || len(s) > 20 {
-						return fmt.Errorf("channel name must be between 1 and 20 characters")
+					if !strings.HasPrefix(s, "https://") {
+						return fmt.Errorf("address must be a SimpleX contact link starting with https://")
 					}
 					return nil
 				}),
 		).WithHideFunc(func() bool {
-			return c.Role == "standalone"
+			return c.Role == "standalone" || c.Role == "executor"
 		}),
 		huh.NewGroup(
 			huh.NewInput().
@@ -261,17 +215,15 @@ func runSetup(initialConfigPath string) {
 		c.SyncIntervalMinutes = interval
 	}
 
-	if c.Role == "ingestor" || c.Role == "executor" {
-		c.JobChannel = teamName
-		if channelName != "" {
-			c.JobChannel += "." + channelName
+	if c.Role == "ingestor" || c.Role == "executor" || c.Role == "standalone" {
+		if c.SimplexPort == 0 {
+			c.SimplexPort = 5225
 		}
 	}
 
 	if autoProvision {
-		c.SecretPath = filepath.Join(c.SecretPath, c.BotUsername+"_paper_key.txt")
-		log.Infof("Auto-provisioning Keybase bots and infrastructure...")
-		err := provisionKeybaseBot(c.Role, c.BotUsername, c.SecretPath, c.JobChannel)
+		log.Infof("Auto-provisioning SimpleX Chat background daemon...")
+		err := provisionSimpleXBot(&c)
 		if err != nil {
 			log.Fatalf("Failed to provision bot: %v", err)
 		}
@@ -289,84 +241,113 @@ func runSetup(initialConfigPath string) {
 	}
 
 	log.Infof("Successfully saved config to %s!", configPath)
-	log.Infof("You can now run the bot using: ./keybase-obsidian-bot -config=%s", configPath)
+	log.Infof("You can now run the bot using: ./umbilical -config=%s", configPath)
 	os.Exit(0)
 }
 
-func provisionKeybaseBot(role, botUsername, secretPath, jobChannel string) error {
-	log.Infof("Generating bot token...")
-	tokenCmd := exec.Command("keybase", "bot", "token", "create")
-	tokenOut, err := tokenCmd.Output()
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			log.Errorf("Token generation failed: %s", string(exitError.Stderr))
+func provisionSimpleXBot(c *Config) error {
+	log.Infof("Checking if simplex-chat is installed...")
+	if _, err := exec.LookPath("simplex-chat"); err != nil {
+		return fmt.Errorf("simplex-chat CLI not found. Please install: curl -o- https://raw.githubusercontent.com/simplex-chat/simplex-chat/stable/install.sh | bash")
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	profileDir := filepath.Join(homeDir, ".config", "umbilical", "profiles", c.BotProfile)
+
+	log.Infof("Starting SimpleX daemon for profile %s on port %d...", c.BotProfile, c.SimplexPort)
+
+	// Use maintenance mode (-m) so the WebSocket server is ready before chat is started.
+	// This avoids a race between the WebSocket binding and initial profile setup.
+	cmd := exec.Command("simplex-chat",
+		"-d", profileDir,
+		"-p", strconv.Itoa(c.SimplexPort),
+		"--create-bot-display-name", c.BotProfile,
+		"-m", // maintenance mode: /_start required to actually boot chat layer
+	)
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start simplex-chat daemon: %v", err)
+	}
+	defer func() {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
 		}
-		return fmt.Errorf("failed to create bot token: %v", err)
-	}
-	token := strings.TrimSpace(string(tokenOut))
+	}()
 
-	tmpHome, err := os.MkdirTemp("", "kb_bot_setup_*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp home directory: %v", err)
-	}
-	defer os.RemoveAll(tmpHome)
+	dialer := websocket.DefaultDialer
+	var conn *websocket.Conn
+	var err error
+	wsURL := fmt.Sprintf("ws://127.0.0.1:%d", c.SimplexPort)
 
-	log.Infof("Signing up bot account @%s...", botUsername)
-	signupCmd := exec.Command("keybase", "--home="+tmpHome, "--standalone", "bot", "signup", "-u", botUsername, "-t", token)
-	signupOut, err := signupCmd.Output()
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			log.Errorf("Signup failed: %s", string(exitError.Stderr))
+	log.Infof("Waiting for WebSocket server to become ready...")
+	for i := 0; i < 15; i++ {
+		conn, _, err = dialer.Dial(wsURL, nil)
+		if err == nil {
+			break
 		}
-		return fmt.Errorf("bot signup failed: %v", err)
+		time.Sleep(1 * time.Second)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to connect to daemon websocket after 15s: %v", err)
+	}
+	defer conn.Close()
+
+	sendCmd := func(corrId, cmd string) error {
+		return conn.WriteJSON(map[string]interface{}{
+			"corrId": corrId,
+			"cmd":    cmd,
+		})
 	}
 
-	paperKey := strings.TrimSpace(string(signupOut))
-
-	log.Infof("Saving paper key to %s...", secretPath)
-	os.MkdirAll(filepath.Dir(secretPath), 0755)
-	if err := os.WriteFile(secretPath, []byte(paperKey), 0600); err != nil {
-		return fmt.Errorf("failed to write paper key: %v", err)
+	// 1. Boot the chat layer (required after -m maintenance mode).
+	log.Infof("Starting chat layer...")
+	if err := sendCmd("start", "/_start"); err != nil {
+		return fmt.Errorf("failed to send /_start: %v", err)
 	}
+	// Give chat layer a moment to fully initialize.
+	time.Sleep(3 * time.Second)
 
-	if role == "ingestor" || role == "executor" {
-		parts := strings.SplitN(jobChannel, ".", 2)
-		teamName := parts[0]
-		channelStr := ""
-		if len(parts) > 1 {
-			channelStr = parts[1]
-		} else {
-			channelStr = "general"
+	if c.Role == "standalone" || c.Role == "executor" {
+		// 2. Show the existing long-term contact address.
+		log.Infof("Requesting long-term contact address (/sa)...")
+		if err := sendCmd("getaddr", "/sa"); err != nil {
+			return fmt.Errorf("failed to send /sa: %v", err)
 		}
 
-		log.Infof("Ensuring team %s exists...", teamName)
-		checkCmd := exec.Command("keybase", "team", "list-members", teamName)
-		if err := checkCmd.Run(); err != nil {
-			log.Infof("Team %s does not appear to exist. Creating...", teamName)
-			createCmd := exec.Command("keybase", "team", "create", teamName)
-			if out, createErr := createCmd.CombinedOutput(); createErr != nil {
-				log.Warnf("Could not create team: %v (output: %s). Assuming it exists or skipping.", createErr, string(out))
+		// Match both short (https://smp...) and long (https://simplex.chat/contact...) address formats.
+		smpRegex := regexp.MustCompile(`https://(?:smp[^\s"'<>]+|simplex\.chat/contact[^\s"'<>]+)`)
+		addressFound := false
+
+		// Read a stream of events; ignore non-matching noise, stop on address or deadline.
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		for !addressFound {
+			var resp map[string]interface{}
+			if err := conn.ReadJSON(&resp); err != nil {
+				// Deadline exceeded or connection closed — no address was found.
+				break
+			}
+
+			raw, _ := json.Marshal(resp)
+			if match := smpRegex.FindString(string(raw)); match != "" {
+				addressFound = true
+				fmt.Println("\n============================================================")
+				fmt.Println("🚀 Executor SimpleX Address generated:")
+				fmt.Printf("\n  %s\n\n", match)
+				fmt.Println("Save this address — you will need it to configure ingestors")
+				fmt.Println("and to add this bot from your Android SimpleX client.")
+				fmt.Println("============================================================")
 			}
 		}
 
-		kbRole := "bot"
-		if role == "executor" {
-			kbRole = "writer"
+		if !addressFound {
+			// Fall back to manual instructions using the interactive (no -p) mode.
+			log.Warn("Could not extract address automatically.")
+			log.Warnf("Run manually to get your address:")
+			log.Warnf("  simplex-chat -d %s", profileDir)
+			log.Warnf("  Then type: /sa")
 		}
-
-		log.Infof("Adding bot to team %s with role %s...", teamName, kbRole)
-		addCmd := exec.Command("keybase", "team", "add-member", teamName, "--user", botUsername, "--role", kbRole)
-		if out, addErr := addCmd.CombinedOutput(); addErr != nil {
-			log.Warnf("Failed to add member to team: %v (output: %s). It may already be a member.", addErr, string(out))
-		}
-
-		if channelStr != "general" {
-			log.Infof("Ensuring channel #%s exists...", channelStr)
-			chatCmd := exec.Command("keybase", "chat", "send", "--channel", "#"+channelStr, teamName, "Initializing bot channel...")
-			if out, chatErr := chatCmd.CombinedOutput(); chatErr != nil {
-				log.Warnf("Failed to send init message to channel: %v (output: %s)", chatErr, string(out))
-			}
-		}
+	} else {
+		log.Infof("SimpleX daemon initialized successfully for ingestor role.")
 	}
 
 	log.Infof("Bot auto-provisioning completed successfully!")

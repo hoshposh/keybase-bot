@@ -1,6 +1,6 @@
 version: 2
 
-project_name: keybase-bot
+project_name: umbilical
 
 before:
   hooks:
@@ -23,7 +23,7 @@ builds:
         goarch: arm
       - goos: windows
         goarch: arm
-    binary: keybase-obsidian-bot
+    binary: "{{ .ProjectName }}"
     ldflags:
       - -s -w
       - -X main.version={{.Version}}

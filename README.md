@@ -1,14 +1,14 @@
-# Keybase to Obsidian Bot
+# SimpleX to Obsidian Bot
 
-A lightweight Go headless service to bridge messages from Keybase and Feedly to a local Obsidian vault using the Model Context Protocol (MCP).
+A lightweight Go headless service to bridge messages from SimpleX Chat and Feedly to a local Obsidian vault using the Model Context Protocol (MCP).
 
 ## Features
 
 - **MCP Integration**: Uses the Model Context Protocol (`mcpvault`) to safely append notes to your Obsidian vault without manual format hacking.
 - **Dual-Input Gateway**:
-    - **Keybase Chat**: Securely receive messages from a trusted Keybase sender.
+    - **SimpleX Chat**: Securely receive messages from a trusted SimpleX connection (e.g. from your Android device).
     - **Feedly Webhooks**: Save articles to your Obsidian vault from Feedly.
-- **Prefix Routing (via Keybase)**:
+- **Prefix Routing (via SimpleX)**:
     - `!note [text]` appends to `[VaultPath]/Inbox.md`
     - `!todo [text]` appends to `[VaultPath]/Tasks.md`
     - `!link [url]` appends to `[VaultPath]/Links.md`
@@ -21,85 +21,37 @@ A lightweight Go headless service to bridge messages from Keybase and Feedly to 
 The bot can be executed in three different deployment modes via the `-role` flag, allowing you to establish a secure, remote-friendly architecture:
 
 1. **Standalone** (`-role=standalone`): The default mode. Runs all features (Webhooks, Keybase Listeners, MCP, and Sync) in a single local process.
-2. **Cloud Ingestor** (`-role=ingestor`): A secure gateway designed to run on a cloud server. It exposes the webhook HTTP server and forwards inbound payload data straight into a specified Keybase Team Channel. It does not perform any local MCP or Vault commands.
-3. **Local Executor** (`-role=executor`): Runs locally behind your firewall. It listens to the Keybase Team Channel for "jobs" sent by the Ingestor and safely executes those payloads into your local Obsidian Vault using MCP.
+2. **Cloud Ingestor** (`-role=ingestor`): A secure gateway designed to run on a cloud server. It exposes the webhook HTTP server and establishes a lightweight SimpleX contact link to deliver payloads to the Executor. It does not perform any local MCP or Vault commands.
+3. **Local Executor** (`-role=executor`): Runs locally behind your firewall. It hosts a long-term SimpleX address and listens for incoming payloads sent by the Ingestor or your mobile device, safely executing those payloads into your local Obsidian Vault using MCP.
 
 By splitting the architecture, your Vault remains entirely air-gapped from the public Internet while you can still host the webhook ingestor anywhere.
 
-## Keybase Setup Guide
+## SimpleX Setup Guide
 
-Whether you run in standalone or split mode, you need Keybase bot accounts and paper keys. If using the split `ingestor` and `executor` roles, you will also need a dedicated Keybase team channel to bridge them.
+The bot relies on the `simplex-chat` CLI to orchestrate decentralized, end-to-end encrypted message queues. Since there is no central server, the local Executor acts as a target node by hosting a long-term connection address, which your Android device or Cloud Ingestors can connect to.
 
-### 1. Create the Keybase Bot Accounts
+### 1. Install SimpleX CLI
+
+You must have `simplex-chat` accessible in your PATH.
+```bash
+curl -o- https://raw.githubusercontent.com/simplex-chat/simplex-chat/stable/install.sh | bash
+```
+
+### 2. Auto-Provisioning Supported
+
+You do not need to manually configure the profiles. The umbilical wizard will automatically spin up `simplex-chat` in a background WebSocket mode to negotiate the profile creation and configure your connection strings.
+
+Run the wizard to provision your nodes:
+```bash
+./umbilical -setup
+```
+
+If you specify the `-role=executor`, the wizard will output a permanent **SimpleX Contact Address** (e.g. `smp://...`).
+You will then provide this address to your Android SimpleX App to pair with it, and also configure the Cloud Ingestor to connect to it.
 
 > [!NOTE]
-> If you are setting up the split architecture with two separate bot accounts (e.g., `my_bot_ingest` and `my_bot_exec`), **you must run these 4 steps twice**—once for each bot to generate their unique paper keys.
+> The Cloud Ingestor is designed to be lightweight. Each webhook instance spins up a lightweight SimpleX link request to the Executor, drops the payload, and closes, ensuring no long-running session state is needed on the cloud server.
 
-To go from "No Bot" to having a **Paper Key** ready for your Go code, follow this specific command-line sequence. We recommend using a temporary home directory (`/tmp/bot_home`) during this process to ensure the bot's setup doesn't interfere with your personal Keybase session.
-
-#### Step 1: Generate the Authorization Token
-First, as your **main user**, generate the token that gives you permission to create a bot.
-```bash
-keybase bot token create > /tmp/bot_token.txt
-```
-*(This saves a base64 string to a temporary file).*
-
-#### Step 2: Create the Bot Account
-Now, run the signup command. We use `--home` to keep it isolated and `--standalone` so it doesn't try to start a permanent background service yet.
-```bash
-keybase --home=/tmp/bot_home --standalone bot signup \
-    -u my_bot_ingest \
-    -t $(cat /tmp/bot_token.txt) > /tmp/bot_paper_key.txt
-```
-Keybase creates the account `@my_bot_ingest` and saves your new **Paper Key** to `/tmp/bot_paper_key.txt`.
-
-#### Step 3: Capture the Paper Key
-Open that file and copy the multi-word phrase inside.
-```bash
-cat /tmp/bot_paper_key.txt
-```
-> [!WARNING]
-> This is the only time this key is shown. If you lose it, you lose access to the bot account. **Copy it now** and store it in your KBFS private folder (or pass it via the `-secret-path` flag to authenticate your instances).
-
-#### Step 4: Clean Up
-Delete the temporary files from your `/tmp` directory securely.
-```bash
-rm /tmp/bot_token.txt /tmp/bot_paper_key.txt
-rm -rf /tmp/bot_home
-```
-
-### 2. Create the Job Channel (Split Architecture)
-
-To implement the **Satellite Pattern** correctly, use a Keybase Team. Teams provide the persistence and administrative control needed to keep your Cloud Ingestor and Local Executor in sync securely.
-
-#### Step 1: Create a Private Team
-First, create a dedicated team for your automation (e.g. `my_automation`).
-```bash
-keybase team create my_automation
-```
-
-#### Step 2: Create the Communication Channel
-By default, every team has a `#general` channel. It is better to create a specific channel for the bot traffic to keep it clean.
-```bash
-keybase chat send --channel '#vault-ingress' my_automation "Initializing bot channel..."
-```
-
-#### Step 3: Add the Two Bot Accounts
-Add both your Cloud Bot and your Local Bot to this team with specific security roles.
-
-- **For the Cloud Ingestor (Bot):**
-  This role allows the bot to write payloads efficiently and resolve channel names cryptographically without granting it full human administrative `writer` rights over the team files.
-  ```bash
-  keybase team add-member my_automation --user my_bot_ingest --role bot
-  ```
-
-- **For the Local Executor (Writer):**
-  This bot remains local and requires full "Writer" permissions to continuously read the history and dequeue the processed messages.
-  ```bash
-  keybase team add-member my_automation --user my_bot_exec --role writer
-  ```
-
-When you launch the binaries, you will supply this channel string (e.g., `my_automation.vault-ingress`) as the `-job-channel` argument.
 
 ## Prerequisites
 
@@ -125,11 +77,11 @@ Other available tasks:
 
 You will need the following information to run the bot:
 - `-role`: (Optional) The deployment role. One of `standalone`, `ingestor`, or `executor`. Default is `standalone`.
-- `-job-channel`: (Required for `ingestor`/`executor`) The Keybase team and channel where jobs are passed (e.g., `myteam.jobs`).
+- `-executor-address`: (Required for `ingestor`) The SimpleX long-term address of your Executor node.
 - `-vault`: (Required for `standalone`/`executor`) The absolute path to your Obsidian vault.
-- `-bot-username`: The username of the Keybase bot/account.
-- `-secret-path`: The file path to a text file containing exactly the Keybase Paper Key.
-- `-allowed-sender`: (Required for `standalone`/`ingestor`) The Keybase username of the person allowed to send commands to the bot.
+- `-bot-profile`: The name of the SimpleX profile folder (e.g., `mybot`).
+- `-simplex-port`: The local port to run the SimpleX WebSocket server on. Default is `5225`.
+- `-allowed-sender`: (Required for `standalone`/`ingestor`) The SimpleX contact alias allowed to send commands to the bot.
 - `-mcp-cmd`: (Optional) The command to run the MCP server. Default is `npx -y @bitbonsai/mcpvault`.
 - `-webhook-port`: (Optional) Port for the Feedly webhook HTTP server. Default is `8080`.
 - `-webhook-secret`: (Optional) A shared secret token to expect in the `Authorization: Bearer <secret>` header from Feedly.
@@ -139,34 +91,33 @@ You will need the following information to run the bot:
 You can easily step through a configuration wizard that will generate your `config.json` by running:
 
 ```bash
-./keybase-obsidian-bot -setup
+./umbilical -setup
 ```
 
 Or you can run the bot bypassing the wizard entirely via CLI arguments:
 
 ```bash
-./keybase-obsidian-bot \
+./umbilical \
   -role="standalone" \
   -vault="/path/to/vault" \
-  -bot-username="mybot" \
-  -secret-path="/path/to/paperkey.txt" \
-  -allowed-sender="myusername" \
+  -bot-profile="mybot" \
+  -allowed-sender="myphone" \
   -webhook-secret="my-super-secret" \
   -sync-remote="gdrive:Research"
 ```
 
-### KBFS Config File
+### Configuration File
 
 You can alternatively pass a single JSON config file (e.g., stored securely in your private KBFS folder `keybase/private/username/config.json`) using the `-config` flag:
 
 ```json
 {
   "role": "standalone",
-  "jobChannel": "",
+  "executorAddress": "smp://...",
   "vaultPath": "/path/to/vault",
-  "botUsername": "mybot",
-  "secretPath": "/path/to/paperkey.txt",
-  "allowedSender": "myusername",
+  "botProfile": "mybot",
+  "simplexPort": 5225,
+  "allowedSender": "myphone",
   "webhookSecret": "my-super-secret",
   "syncRemote": "gdrive:Research",
   "syncIntervalMinutes": 15
@@ -174,7 +125,7 @@ You can alternatively pass a single JSON config file (e.g., stored securely in y
 ```
 
 ```bash
-./keybase-obsidian-bot -config="/path/to/config.json"
+./umbilical -config="/path/to/config.json"
 ```
 
 ## Feedly Webhook Setup & Cloudflare Tunnel
@@ -247,16 +198,16 @@ Because it relies on standard HTTP POST requests, you can trigger this endpoint 
 
 It is recommended to run this agent as a systemd service in the background on your local machine.
 
-Create a file named `keybase-obsidian-bot.service` in `~/.config/systemd/user/`:
+Create a file named `umbilical.service` in `~/.config/systemd/user/`:
 
 ```ini
 [Unit]
-Description=Keybase to Obsidian Bot
+Description=SimpleX to Obsidian Bot
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/keybase-obsidian-bot -vault="/path/to/vault" -bot-username="mybot" -secret-path="/path/to/paperkey.txt" -allowed-sender="myusername" -webhook-secret="your-secret" -sync-remote="gdrive:Research"
+ExecStart=/path/to/umbilical -vault="/path/to/vault" -bot-profile="mybot" -allowed-sender="myphone" -webhook-secret="your-secret" -sync-remote="gdrive:Research"
 Restart=on-failure
 RestartSec=10
 
@@ -268,8 +219,8 @@ Then enable and start the service:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable keybase-obsidian-bot.service
-systemctl --user start keybase-obsidian-bot.service
+systemctl --user enable umbilical.service
+systemctl --user start umbilical.service
 ```
 
 ## Dependency Management

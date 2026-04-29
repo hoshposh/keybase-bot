@@ -1,4 +1,4 @@
-module github.com/hoshposh/keybase-obsidian-bot
+module github.com/hoshposh/umbilical
 
 go 1.26.2
 
@@ -6,7 +6,7 @@ require (
 	charm.land/huh/v2 v2.0.3
 	charm.land/lipgloss/v2 v2.0.3
 	charm.land/log/v2 v2.0.0
-	github.com/keybase/go-keybase-chat-bot v0.0.0-20260323181222-96da9efa9eec
+	github.com/gorilla/websocket v1.5.3
 	github.com/stretchr/testify v1.11.1
 )
 
