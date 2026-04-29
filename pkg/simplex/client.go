@@ -9,8 +9,10 @@
 package simplex
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -41,7 +43,7 @@ type Client struct {
 // NewClient starts a simplex-chat daemon for the given profile directory and port,
 // connects via WebSocket, and initialises the chat layer. The caller is responsible
 // for calling Close() when done.
-func NewClient(profileDir string, port int) (*Client, error) {
+func NewClient(ctx context.Context, profileDir string, port int) (*Client, error) {
 	// Expand profile dir to absolute path so the daemon and log messages are unambiguous.
 	absProfileDir, err := filepath.Abs(profileDir)
 	if err != nil {
@@ -50,7 +52,7 @@ func NewClient(profileDir string, port int) (*Client, error) {
 
 	log.Infof("Starting simplex-chat daemon: profile=%s port=%d", absProfileDir, port)
 
-	cmd := exec.Command("simplex-chat",
+	cmd := exec.CommandContext(ctx, "simplex-chat", //nolint:gosec // fixed binary; arguments are config values, not user input
 		"-d", absProfileDir,
 		"-p", strconv.Itoa(port),
 		"-m", // maintenance mode: WebSocket up before chat, prevents TTY crash
@@ -71,20 +73,30 @@ func NewClient(profileDir string, port int) (*Client, error) {
 	log.Infof("Waiting for simplex-chat WebSocket on %s...", wsURL)
 
 	for i := 0; i < 15; i++ {
-		c.conn, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
+		var resp *http.Response
+		c.conn, resp, err = websocket.DefaultDialer.Dial(wsURL, nil)
+		if resp != nil {
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				log.Debugf("simplex: dial response body close: %v", closeErr)
+			}
+		}
 		if err == nil {
 			break
 		}
 		time.Sleep(1 * time.Second)
 	}
 	if err != nil {
-		cmd.Process.Kill()
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			log.Warnf("simplex: kill daemon after connect failure: %v", killErr)
+		}
 		return nil, fmt.Errorf("simplex: connect WebSocket after 15s: %w", err)
 	}
 
 	// Boot the chat layer (required in maintenance mode).
 	if err := c.sendCmd("/_start"); err != nil {
-		c.Close()
+		if closeErr := c.Close(); closeErr != nil {
+			log.Warnf("simplex: close after start failure: %v", closeErr)
+		}
 		return nil, fmt.Errorf("simplex: send /_start: %w", err)
 	}
 
@@ -229,7 +241,9 @@ func (c *Client) Listen(handler func(msg IncomingMessage)) error {
 // Close shuts down the WebSocket connection and kills the daemon subprocess.
 func (c *Client) Close() error {
 	if c.conn != nil {
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			log.Warnf("simplex: websocket close: %v", err)
+		}
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		return c.cmd.Process.Kill()

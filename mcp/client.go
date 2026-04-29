@@ -63,7 +63,7 @@ func NewClient(ctx context.Context, serverCmd []string, vaultPath string) (*Clie
 	if vaultPath != "" {
 		args = append(args, vaultPath)
 	}
-	cmd := exec.CommandContext(ctx, serverCmd[0], args...)
+	cmd := exec.CommandContext(ctx, serverCmd[0], args...) //nolint:gosec // serverCmd is from validated user config
 	cmd.Env = append(os.Environ(), "OBSIDIAN_VAULT_PATH="+vaultPath)
 
 	stdin, err := cmd.StdinPipe()
@@ -108,7 +108,7 @@ func NewClient(ctx context.Context, serverCmd []string, vaultPath string) (*Clie
 	}
 
 	if _, err := c.Call(ctx, "initialize", initParams); err != nil {
-		c.Close()
+		_ = c.Close() // best-effort cleanup; return the init error
 		return nil, fmt.Errorf("MCP initialize failed: %w", err)
 	}
 
@@ -151,10 +151,8 @@ func (c *Client) readLoop() {
 				req.ch <- &msg
 				c.reqMap.Delete(*msg.ID)
 			}
-		} else {
-			// It's a notification from the server
-			// We can ignore or log it
 		}
+		// server notifications (no ID) are intentionally ignored
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -278,7 +276,9 @@ func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		err = c.stdin.Close()
 		if c.cmd != nil && c.cmd.Process != nil {
-			c.cmd.Process.Kill()
+			if killErr := c.cmd.Process.Kill(); killErr != nil && err == nil {
+				err = killErr
+			}
 		}
 	})
 	return err

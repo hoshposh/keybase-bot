@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"charm.land/log/v2"
 )
@@ -164,7 +165,11 @@ func StartWebhookServer(port int, secret string, h MessageDispatcher) *http.Serv
 	mux.HandleFunc("/webhooks/generic", ws.GenericAuthMiddleware(ws.GenericHandler))
 
 	addr := fmt.Sprintf(":%d", port)
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	go func() {
 		log.Printf("Starting webhook server on %s", addr)

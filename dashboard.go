@@ -46,7 +46,7 @@ func printDashboard(bot, allowed, vault string, webhookPort int, webhookSecret s
 	rows += labelStyle.Render("Webhooks:") + valueStyle.Render(webhookStr) + "\n"
 
 	if syncRemote != "" {
-		rows += labelStyle.Render("Drive Sync:") + valueStyle.Render(fmt.Sprintf("%s", syncRemote)) + "\n"
+		rows += labelStyle.Render("Drive Sync:") + valueStyle.Render(syncRemote) + "\n"
 	} else {
 		rows += labelStyle.Render("Drive Sync:") + offStyle.Render("Disabled") + "\n"
 	}

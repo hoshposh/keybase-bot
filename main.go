@@ -24,7 +24,7 @@ import (
 	"github.com/hoshposh/umbilical/mcp"
 	"github.com/hoshposh/umbilical/pkg/simplex"
 	"github.com/hoshposh/umbilical/server"
-	"github.com/hoshposh/umbilical/sync"
+	syncpkg "github.com/hoshposh/umbilical/sync"
 )
 
 type Config struct {
@@ -57,22 +57,6 @@ type BotState struct {
 }
 
 var version = "dev"
-
-func loadState(path string) BotState {
-	var s BotState
-	data, err := os.ReadFile(path)
-	if err == nil {
-		json.Unmarshal(data, &s)
-	}
-	return s
-}
-
-func saveState(path string, s BotState) {
-	data, err := json.Marshal(s)
-	if err == nil {
-		os.WriteFile(path, data, 0644)
-	}
-}
 
 func main() {
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
@@ -125,7 +109,7 @@ func main() {
 
 	// Parse config from KBFS or other file if provided
 	if *configPath != "" {
-		data, err := os.ReadFile(*configPath)
+		data, err := os.ReadFile(*configPath) //nolint:gosec // path is a user-supplied CLI flag
 		if err != nil {
 			log.Fatalf("Failed to read config file at %s: %v", *configPath, err)
 		}
@@ -221,14 +205,18 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to initialize MCP Client: %v", err)
 		}
-		defer mcpClient.Close()
+		defer func() {
+			if err := mcpClient.Close(); err != nil {
+				log.Errorf("MCP client close: %v", err)
+			}
+		}()
 		log.Printf("MCP client initialized successfully.")
 
 		msgHandler = handler.NewMessageHandler(*vaultPath, mcpClient)
 		dispatcher = msgHandler
 
 		if *syncRemote != "" {
-			driveSync := sync.NewDriveSync(*vaultPath, *syncRemote, *syncInterval)
+			driveSync := syncpkg.NewDriveSync(*vaultPath, *syncRemote, *syncInterval)
 			go driveSync.Start(ctx)
 		}
 	}
@@ -243,11 +231,15 @@ func main() {
 	// --- SimpleX daemon + listener ---
 	// The SimpleX WebSocket is the primary channel for Android client → vault communication.
 	// It is required for standalone and executor roles.
-	simplexClient, err := simplex.NewClient(profileDir, *simplexPort)
+	simplexClient, err := simplex.NewClient(ctx, profileDir, *simplexPort)
 	if err != nil {
 		log.Fatalf("Failed to start SimpleX client: %v", err)
 	}
-	defer simplexClient.Close()
+	defer func() {
+		if err := simplexClient.Close(); err != nil {
+			log.Errorf("SimpleX client close: %v", err)
+		}
+	}()
 
 	if isStandalone || isExecutor {
 		go func() {
@@ -283,7 +275,9 @@ func main() {
 	if httpServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		httpServer.Shutdown(shutdownCtx)
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Errorf("HTTP server shutdown: %v", err)
+		}
 	}
 
 	os.Exit(0)

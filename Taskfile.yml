@@ -10,6 +10,11 @@ tasks:
     cmds:
       - go build -ldflags="-w -s" -o umbilical
 
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
   test:
     desc: Run unit tests
     cmds:

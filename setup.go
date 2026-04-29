@@ -6,8 +6,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +41,7 @@ func runSetup(initialConfigPath string) {
 		c.Role = "standalone"
 	}
 
-	if data, err := os.ReadFile(configPath); err == nil {
+	if data, err := os.ReadFile(configPath); err == nil { //nolint:gosec // configPath is from user input or a known default
 		if err := json.Unmarshal(data, &c); err == nil {
 			log.Infof("Pre-filling wizard with existing config from %s", configPath)
 			if c.Role == "" {
@@ -234,7 +236,9 @@ func runSetup(initialConfigPath string) {
 		log.Fatalf("Failed to marshal config: %v", err)
 	}
 
-	os.MkdirAll(filepath.Dir(configPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0750); err != nil {
+		log.Fatalf("Failed to create config directory: %v", err)
+	}
 	err = os.WriteFile(configPath, data, 0600)
 	if err != nil {
 		log.Fatalf("Failed to write config file to %s: %v", configPath, err)
@@ -258,7 +262,7 @@ func provisionSimpleXBot(c *Config) error {
 
 	// Use maintenance mode (-m) so the WebSocket server is ready before chat is started.
 	// This avoids a race between the WebSocket binding and initial profile setup.
-	cmd := exec.Command("simplex-chat",
+	cmd := exec.CommandContext(context.Background(), "simplex-chat", //nolint:gosec // arguments are validated config values
 		"-d", profileDir,
 		"-p", strconv.Itoa(c.SimplexPort),
 		"--create-bot-display-name", c.BotProfile,
@@ -270,7 +274,9 @@ func provisionSimpleXBot(c *Config) error {
 	}
 	defer func() {
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			if err := cmd.Process.Kill(); err != nil {
+				log.Warnf("simplex-chat process kill: %v", err)
+			}
 		}
 	}()
 
@@ -281,7 +287,13 @@ func provisionSimpleXBot(c *Config) error {
 
 	log.Infof("Waiting for WebSocket server to become ready...")
 	for i := 0; i < 15; i++ {
-		conn, _, err = dialer.Dial(wsURL, nil)
+		var resp *http.Response
+		conn, resp, err = dialer.Dial(wsURL, nil)
+		if resp != nil {
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				log.Debugf("provisioner: dial response body close: %v", closeErr)
+			}
+		}
 		if err == nil {
 			break
 		}
@@ -290,7 +302,11 @@ func provisionSimpleXBot(c *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to daemon websocket after 15s: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Warnf("websocket close: %v", err)
+		}
+	}()
 
 	sendCmd := func(corrId, cmd string) error {
 		return conn.WriteJSON(map[string]interface{}{
@@ -319,7 +335,9 @@ func provisionSimpleXBot(c *Config) error {
 		addressFound := false
 
 		// Read a stream of events; ignore non-matching noise, stop on address or deadline.
-		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			return fmt.Errorf("failed to set read deadline: %w", err)
+		}
 		for !addressFound {
 			var resp map[string]interface{}
 			if err := conn.ReadJSON(&resp); err != nil {

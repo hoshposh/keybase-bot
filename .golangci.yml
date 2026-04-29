@@ -1,0 +1,45 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - errcheck       # unchecked errors
+    - govet          # go vet checks
+    - ineffassign    # ineffectual assignments
+    - staticcheck    # static analysis incl. gosimple (SA*, S*, QF*, ST*)
+    - unused         # unused code
+
+    # Style / best practices
+    - misspell       # common spelling mistakes
+    - unconvert      # unnecessary type conversions
+    - unparam        # unused function parameters
+    - noctx          # http.Request without context
+    - bodyclose      # http response body not closed
+    - durationcheck  # incorrect time.Duration multiplications
+
+    # Security
+    - gosec          # security issues (G* rules)
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters-settings:
+  gosec:
+    excludes:
+      - G104  # Errors unhandled (covered by errcheck)
+  goimports:
+    local-prefixes: github.com/hoshposh/umbilical
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Test files get relaxed rules
+    - path: "_test\\.go"
+      linters:
+        - gosec
+        - unparam
+
