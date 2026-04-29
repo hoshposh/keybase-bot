@@ -21,25 +21,28 @@ linters:
     # Security
     - gosec          # security issues (G* rules)
 
+  settings:
+    gosec:
+      excludes:
+        - G104  # Errors unhandled (covered by errcheck)
+
+  exclusions:
+    rules:
+      # Test files get relaxed rules
+      - path: "_test\\.go"
+        linters:
+          - gosec
+          - unparam
+
 formatters:
   enable:
     - gofmt
     - goimports
-
-linters-settings:
-  gosec:
-    excludes:
-      - G104  # Errors unhandled (covered by errcheck)
-  goimports:
-    local-prefixes: github.com/hoshposh/umbilical
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/hoshposh/umbilical
 
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # Test files get relaxed rules
-    - path: "_test\\.go"
-      linters:
-        - gosec
-        - unparam
-
