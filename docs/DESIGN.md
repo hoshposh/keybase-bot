@@ -1,85 +1,132 @@
-# Architecture and Design of Keybase-Obsidian Bot
+# Architecture and Design of Umbilical
 
-This document outlines the architectural patterns, component responsibilities, and key technical decisions made during the development of the Keybase-Obsidian Bot as a headless service.
+This document outlines the architectural patterns, component responsibilities, and key technical decisions made during the development of Umbilical — a headless Go service that bridges SimpleX Chat and webhooks into a local Obsidian vault.
 
 ## 1. Overview
 
-The Keybase-Obsidian Bot is a lightweight Go background service designed to accept inputs from external platforms and seamlessly route them as structured content into a local Obsidian vault.
+Umbilical is a lightweight Go background service designed to accept inputs from external platforms and route them as structured content into a local Obsidian vault.
 
 It operates as a **Dual-Input Gateway**, supporting two primary ingestion pipelines:
-1. **Keybase Chat**: Real-time parsing of direct messages sent to a dedicated Keybase bot account.
-2. **Feedly Webhooks**: Handling automated "`NewEntrySaved`" server-to-server HTTP events triggered by Feedly enterprise webhooks.
+1. **SimpleX Chat**: Real-time parsing of direct messages sent by a trusted SimpleX contact (e.g. your Android device).
+2. **Feedly Webhooks**: Handling automated `NewEntrySaved` HTTP events triggered by Feedly, or any compatible generic webhook source.
 
-Rather than managing file locks, frontmatter parsing, and the complexity of direct manipulation of local Markdown files, the bot relies entirely on the **Model Context Protocol (MCP)**. By acting as an MCP Client wrapped around a subprocess (like `@bitbonsai/mcpvault`), it safely issues JSON-RPC `append_content` commands, decoupling the bot's ingestion logic from Obsidian's intricate file structure.
+Rather than managing file locks, frontmatter parsing, and the complexity of direct Markdown file manipulation, Umbilical relies entirely on the **Model Context Protocol (MCP)**. By acting as an MCP Client wrapped around a subprocess (like `@bitbonsai/mcpvault`), it safely issues JSON-RPC `write_note` and `read_note` commands, decoupling the ingestion logic from Obsidian's intricate file structure.
 
-Additionally, to integrate with external LLM processors like Google's NotebookLM, an isolated synchronisation process duplicates local markdown context to a cloud provider.
+Additionally, to integrate with external LLM processors like Google's NotebookLM, an isolated synchronisation process replicates local markdown context to a cloud provider.
 
-## 2. Core Components
+## 2. Deployment Roles
 
-### `main.go` - Orchestrator & Configuration
-The entrypoint aggregates configurations originating from either standard CLI flags or a consolidated `.json` file (`-config`). It owns the lifecycle of the system context (`ctx`), spinning up concurrently running services (Webhook listener, MCP Subprocess, Drive Sync Loop, Keybase Message Listener) and binds them tightly via channels to facilitate graceful system shutdowns (`SIGTERM`/`SIGINT`).
+Umbilical supports three deployment modes via the `-role` flag, enabling a secure split-trust architecture:
 
-### `mcp/client.go` - The MCP Interface
-Implements a standardized, minimal JSON-RPC 2.0 client operating exclusively over Standard Input and Output (`stdio`) byte streams.
-- **Responsibilities**: 
-  - Manage the instantiation of a child process (the MCP Server executable).
-  - Inject runtime environment variables (e.g., `OBSIDIAN_VAULT_PATH`).
-  - Safely marshal/unmarshal structured JSON queries mapping to standard `tools/call`.
-- **Why Stdio?**: By avoiding network-bound components, creating a hardened, strictly-local process tree dramatically simplifies port orchestration and firewall considerations.
+| Role | Where it runs | Responsibilities |
+|------|---------------|-----------------|
+| `standalone` | Local machine | All features: webhook server, SimpleX listener, MCP writes, Drive sync |
+| `ingestor` | Cloud server | Webhook ingestion + SimpleX forwarding to Executor; no vault access |
+| `executor` | Local machine | SimpleX listener only; executes vault writes via MCP |
 
-### `server/webhook.go` - HTTP Webhook Gateway
-A standard `net/http` router defining the Feedly integration endpoints.
-- **Responsibilities**: 
-  - Host a `POST /webhooks/feedly` handler.
-  - Expose a strict `FeedlyAuthMiddleware` assessing `Authorization: Bearer <secret>`.
-  - Transform unstructured Feedly JSON into the standardized markdown `!link` syntax and proxy it directly to the shared `MessageHandler`.
+The split architecture ensures the Obsidian vault is never directly reachable from the public internet. The Ingestor acts as a dumb relay: it receives webhooks and forwards payloads to the Executor over SimpleX's end-to-end encrypted transport.
 
-### `handler/handler.go` - Content Routing Protocol
-Translates the string data (originating from either Keybase chat arrays or templated Feedly webhook bodies) into concrete logical pathways.
-- **Responsibilities**: 
-  - Apply prefix-based categorization (`!note` -> `Inbox.md`, `!todo` -> `Tasks.md`, `!link` -> `Links.md`).
-  - Automatically detect and route raw URLs (starting with `http://` or `https://` and containing no spaces) to `Links.md`.
-  - Dispatch the abstracted path and content to the `MCPClient` interface invoking the `append_content` tool.
-  - Default route to `Daily/YYYY-MM-DD.md`.
+## 3. Core Components
 
-### `sync/drive_sync.go` - Passive Data Replication
+### `main.go` — Orchestrator & Configuration
+The entrypoint aggregates configuration from CLI flags or a consolidated JSON file (`-config`). It owns the lifecycle of the system context (`ctx`), spinning up concurrently running services (Webhook listener, SimpleX daemon, MCP subprocess, Drive Sync loop) and binding them via context cancellation for graceful shutdown on `SIGTERM`/`SIGINT`.
+
+### `pkg/simplex/client.go` — SimpleX Daemon Manager
+Manages a `simplex-chat` CLI subprocess over its WebSocket API.
+- **Responsibilities**:
+  - Start `simplex-chat` in maintenance mode (`-m`) and connect to it via WebSocket
+  - Boot the chat layer with `/_start` and enable `auto_accept` for incoming contacts
+  - `Listen`: Stream incoming `newChatItems` events and surface them as typed `IncomingMessage` values
+  - `Send`: Connect to an Executor address and deliver a forwarded payload (ingestor role)
+  - `Reply`: Send an acknowledgement back to an existing contact by display name
+- **Why subprocess?**: SimpleX has no embeddable Go SDK. Spawning `simplex-chat` as a child process with a WebSocket control interface is the idiomatic integration path.
+
+### `mcp/client.go` — The MCP Interface
+Implements a minimal JSON-RPC 2.0 client over stdio for communicating with an MCP server subprocess.
+- **Responsibilities**:
+  - Manage the instantiation of a child process (the MCP server executable)
+  - Inject runtime environment variables (e.g., `OBSIDIAN_VAULT_PATH`)
+  - Safely marshal/unmarshal structured JSON queries mapping to standard `tools/call`
+- **Why stdio?**: By avoiding network-bound components, a hardened, strictly-local process tree simplifies port orchestration and firewall considerations.
+
+### `server/webhook.go` — HTTP Webhook Gateway
+A standard `net/http` router defining the webhook integration endpoints.
+- **Responsibilities**:
+  - `POST /webhooks/feedly`: HMAC-SHA256 authenticated Feedly handler
+  - `POST /webhooks/generic`: Bearer-token authenticated generic handler for Make.com, Zapier, IFTTT, etc.
+  - Transform incoming JSON into the standard message routing format and proxy to the `MessageDispatcher`
+
+### `server/ingestor_dispatcher.go` — SimpleX Relay Dispatcher
+Used exclusively by the `ingestor` role to forward webhook payloads to the Executor.
+- **Responsibilities**:
+  - On `Handle(ctx, msg)`, call `simplexClient.Send(executorAddress, msg)` to relay the payload over SimpleX
+
+### `handler/handler.go` — Content Routing Protocol
+Translates string payloads (from SimpleX chat or webhook bodies) into concrete vault writes via MCP.
+- **Responsibilities**:
+  - Apply prefix-based categorisation: `!note` → `Inbox.md`, `!todo` → `Tasks.md`, `!link` → `Links.md`
+  - Auto-detect raw URLs (no spaces, starts with `http://` or `https://`) → `Links.md`
+  - Default route: `Daily/YYYY-MM-DD.md`
+  - Deduplication: read the existing file before writing; if identical content is found, remove and re-append at the bottom (move-to-bottom semantic)
+  - Date heading injection: group non-daily entries under a `## YYYY-MM-DD` heading per day
+
+### `sync/drive_sync.go` — Passive Data Replication
 A standalone background ticker decoupled from the primary ingest services.
 - **Responsibilities**:
-  - Periodically wake and trigger `rclone sync --create-empty-src-dirs` to mirror the `/Research` subdirectory to a configured cloud remote (e.g., Google Drive) securely.
+  - Periodically wake and trigger `rclone sync --create-empty-src-dirs` to mirror the `/Research` subdirectory to a configured cloud remote (e.g., Google Drive)
 
-## 3. Key Architectural Decisions
+### `setup.go` — Interactive Setup Wizard
+An interactive TUI (via `charmbracelet/huh`) that guides users through configuration and optionally auto-provisions the SimpleX daemon.
+- **Responsibilities**:
+  - Collect role, vault path, SimpleX profile, sender allowlist, webhook and sync settings
+  - Optionally launch `simplex-chat` in maintenance mode, boot it, and extract the long-term contact address via WebSocket
+  - Persist config to `~/.config/umbilical/config.json`
+
+## 4. Key Architectural Decisions
 
 ### Delegating File I/O to the Model Context Protocol (MCP)
-By migrating from direct `os` file operations to the MCP architecture, the bot treats Obsidian as a generic API rather than a raw filesystem. 
-- **Rationale**: Direct manipulation is fragile. Advanced Obsidian vaults contain intricate YAML frontmatters, index dependencies, and formatting standards. Using an MCP Server (like `mcpvault`) shifts the maintenance burden of interacting with those nuances off this Go binary. The bot simply states "I want to append this content to this logical path."
+By migrating from direct `os` file operations to MCP, Umbilical treats Obsidian as a generic API rather than a raw filesystem.
+- **Rationale**: Direct manipulation is fragile. Advanced Obsidian vaults contain intricate YAML frontmatters, index dependencies, and formatting standards. Using an MCP server (like `mcpvault`) shifts the maintenance burden of interacting with those nuances off this Go binary.
 
-### KBFS (Keybase File System) Native Configuration
-Moving secrets to a config file (`config.json`) instead of parsing them from standard runtime flags was a strategic security choice.
-- **Rationale**: Setting standard inputs like `-webhook-secret` inevitably dumps plaintext access tokens into `ps aux` command history. Relying on Keybase's built-in securely distributed KBFS volume allows the bot to ingest dynamic, end-to-end encrypted settings with minimal implementation overhead.
+### SimpleX as the Messaging Layer
+SimpleX Chat provides end-to-end encrypted, decentralised messaging with no central server, no phone number requirement, and a CLI daemon (`simplex-chat`) with a programmable WebSocket API.
+- **Rationale**: Compared to Keybase (which requires account registration, team setup, and a bespoke Go SDK), SimpleX has a simpler operational model and stronger privacy properties. The WebSocket API is stable enough for subprocess control.
+
+### Config File over Environment Variables
+Secrets are stored in `~/.config/umbilical/config.json` (mode `0600`) rather than passed as CLI flags.
+- **Rationale**: CLI flags inevitably expose secrets in `ps aux` output. A dedicated, user-owned config file is simpler and safer than injecting secrets via environment variables for a long-running service.
 
 ### Subprocess Execution for Replication (`rclone`)
-When introducing a sync loop to Google Drive, we chose to execute the `rclone` binary via `exec.Cmd` rather than natively compiling a Go Google Workspace SDK script.
-- **Rationale**: Implementing the full Workspace OAuth 2.0 flow natively in Go is significant overhead. `rclone` is the industry standard for lightweight storage protocols. Invoking it as a context-aware subprocess allows complete flexibility; if a user switches their grounding mechanism from Google Drive to Dropbox, only the CLI parameters change, requiring no Go code adjustments.
+The sync loop executes `rclone` as a subprocess rather than using a native Go Workspace SDK.
+- **Rationale**: Implementing the full Workspace OAuth 2.0 flow natively in Go is significant overhead. `rclone` is the industry standard for lightweight storage synchronisation and supports dozens of backends — switching from Google Drive to Dropbox or S3 requires only a config change, not code changes.
 
-## 4. Data Flow Graph
+## 5. Data Flow Graph
 
 ```mermaid
 graph TD;
     %% Data Ingestion
-    A[Keybase Client] -->|Receives Chat Msg| B
-    C[Feedly] -->|POST webhook JSON| D[Cloudflared Tunnel]
+    A[Android SimpleX Client] -->|Direct Message| B[SimpleX Daemon]
+    C[Feedly / Automation] -->|POST webhook JSON| D[Cloudflared Tunnel]
     D -->|Localhost| E[Webhook Server]
-    
-    %% Routing
-    A -->|Raw Strings| B(Message Handler)
-    E -->|Formatted !note| B
-    
+
+    %% Standalone / Executor path
+    B -->|IncomingMessage| F(Message Handler)
+    E -->|Formatted payload| F
+
+    %% Ingestor relay path
+    E -->|Dispatcher.Handle| G[Ingestor Dispatcher]
+    G -->|simplex.Send| H[SimpleX Daemon - Cloud]
+    H -->|E2E Encrypted| B
+
     %% Execution via MCP
-    B -->|Tools/Call append_content| F(MCP Client wrapper)
-    F -->|JSON-RPC over Stdio| G(mcpvault subprocess)
-    G -->|Native File I/O| H[(Obsidian Vault)]
-    
+    F -->|tools/call write_note| I(MCP Client)
+    I -->|JSON-RPC over stdio| J(mcpvault subprocess)
+    J -->|Native File I/O| K[(Obsidian Vault)]
+
     %% Background Loop
-    I(Drive Sync Ticker) -->|invokes rclone sync| H
-    I -.->|Remote backup| J[Google Drive / NotebookLM]
+    L(Drive Sync Ticker) -->|rclone sync| K
+    L -.->|Remote backup| M[Google Drive / NotebookLM]
+
+    %% Bot Replies
+    F -->|simplex.Reply| B
 ```

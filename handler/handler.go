@@ -19,6 +19,12 @@ type MCPClient interface {
 	CallTool(ctx context.Context, name string, args map[string]any) ([]byte, error)
 }
 
+// Result carries metadata about a completed Handle operation.
+type Result struct {
+	// DestFile is the vault-relative path of the file that was written.
+	DestFile string
+}
+
 // MessageHandler handles routing incoming messages to the appropriate Obsidian file via MCP.
 type MessageHandler struct {
 	VaultPath string
@@ -36,10 +42,11 @@ func NewMessageHandler(vaultPath string, mcpClient MCPClient) *MessageHandler {
 }
 
 // Handle processes a message and routes it to the correct note using MCP.
-func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
+// It returns a Result describing where the content was written.
+func (h *MessageHandler) Handle(ctx context.Context, msg string) (Result, error) {
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
-		return nil
+		return Result{}, nil
 	}
 
 	var destFile string
@@ -134,8 +141,8 @@ func (h *MessageHandler) Handle(ctx context.Context, msg string) error {
 
 	_, err = h.MCPClient.CallTool(ctx, "write_note", args)
 	if err != nil {
-		return fmt.Errorf("failed to call MCP write_note (%s) for %s: %w", mode, destFile, err)
+		return Result{}, fmt.Errorf("failed to call MCP write_note (%s) for %s: %w", mode, destFile, err)
 	}
 
-	return nil
+	return Result{DestFile: destFile}, nil
 }

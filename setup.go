@@ -74,8 +74,8 @@ func runSetup(initialConfigPath string) {
 				Description("Select how this bot instance will run").
 				Options(
 					huh.NewOption("Standalone (Both Webhooks + Executor)", "standalone"),
-					huh.NewOption("Cloud Ingestor (Webhooks to Keybase)", "ingestor"),
-					huh.NewOption("Local Executor (Keybase to Vault)", "executor"),
+					huh.NewOption("Cloud Ingestor (Webhooks to SimpleX Relay)", "ingestor"),
+					huh.NewOption("Local Executor (SimpleX to Vault)", "executor"),
 				).
 				Value(&c.Role),
 		),

@@ -238,7 +238,64 @@ func (c *Client) Listen(handler func(msg IncomingMessage)) error {
 	}
 }
 
-// Close shuts down the WebSocket connection and kills the daemon subprocess.
+// Send connects to a remote SimpleX address (e.g. an Executor) and delivers a
+// one-shot message. It uses an ephemeral strategy: connect, wait for acceptance,
+// send, then leave the connection in place for the daemon to manage.
+//
+// This is intended for the Ingestor role, which forwards webhook payloads to a
+// remote Executor over SimpleX's E2E encrypted transport.
+func (c *Client) Send(address string, message string) error {
+	log.Infof("simplex: connecting to executor at %s", address)
+
+	if err := c.sendCmd("/connect " + address); err != nil {
+		return fmt.Errorf("simplex: send /connect: %w", err)
+	}
+
+	// Wait for the contactConnected event that tells us the contact was accepted
+	// and gives us the display name we can address the follow-up message to.
+	if err := c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return fmt.Errorf("simplex: set read deadline: %w", err)
+	}
+	defer func() {
+		// Clear the deadline so the shared connection is not affected after Send returns.
+		_ = c.conn.SetReadDeadline(time.Time{})
+	}()
+
+	var contactName string
+	for contactName == "" {
+		var raw rawResponse
+		if err := c.conn.ReadJSON(&raw); err != nil {
+			return fmt.Errorf("simplex: waiting for contactConnected: %w", err)
+		}
+		var event struct {
+			Type    string `json:"type"`
+			Contact struct {
+				LocalDisplayName string `json:"localDisplayName"`
+			} `json:"contact"`
+		}
+		if err := json.Unmarshal(raw.Resp, &event); err != nil {
+			continue
+		}
+		if event.Type == "contactConnected" && event.Contact.LocalDisplayName != "" {
+			contactName = event.Contact.LocalDisplayName
+		}
+	}
+
+	log.Infof("simplex: executor contact established as %q, sending payload", contactName)
+	return c.Reply(contactName, message)
+}
+
+// Reply sends a message to an existing SimpleX contact identified by their
+// local display name. It is used for both bot acknowledgements (standalone/executor
+// roles) and for delivering payloads to the Executor (ingestor role via Send).
+func (c *Client) Reply(contactName string, message string) error {
+	cmd := fmt.Sprintf("/@ %s %s", contactName, message)
+	if err := c.sendCmd(cmd); err != nil {
+		return fmt.Errorf("simplex: reply to %s: %w", contactName, err)
+	}
+	return nil
+}
+
 func (c *Client) Close() error {
 	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {

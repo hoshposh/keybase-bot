@@ -20,6 +20,7 @@ import (
 	"charm.land/log/v2"
 )
 
+// MessageDispatcher routes incoming message text to the appropriate vault destination.
 type MessageDispatcher interface {
 	Handle(ctx context.Context, msg string) error
 }

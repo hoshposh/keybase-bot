@@ -20,7 +20,7 @@ A lightweight Go headless service to bridge messages from SimpleX Chat and Feedl
 
 The bot can be executed in three different deployment modes via the `-role` flag, allowing you to establish a secure, remote-friendly architecture:
 
-1. **Standalone** (`-role=standalone`): The default mode. Runs all features (Webhooks, Keybase Listeners, MCP, and Sync) in a single local process.
+1. **Standalone** (`-role=standalone`): The default mode. Runs all features (Webhooks, SimpleX Listener, MCP, and Sync) in a single local process.
 2. **Cloud Ingestor** (`-role=ingestor`): A secure gateway designed to run on a cloud server. It exposes the webhook HTTP server and establishes a lightweight SimpleX contact link to deliver payloads to the Executor. It does not perform any local MCP or Vault commands.
 3. **Local Executor** (`-role=executor`): Runs locally behind your firewall. It hosts a long-term SimpleX address and listens for incoming payloads sent by the Ingestor or your mobile device, safely executing those payloads into your local Obsidian Vault using MCP.
 
@@ -108,7 +108,7 @@ Or you can run the bot bypassing the wizard entirely via CLI arguments:
 
 ### Configuration File
 
-You can alternatively pass a single JSON config file (e.g., stored securely in your private KBFS folder `keybase/private/username/config.json`) using the `-config` flag:
+You can alternatively pass a single JSON config file (e.g., stored securely in `~/.config/umbilical/config.json`) using the `-config` flag:
 
 ```json
 {

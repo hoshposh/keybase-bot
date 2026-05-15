@@ -43,24 +43,21 @@ type Config struct {
 	SyncIntervalMinutes int    `json:"syncIntervalMinutes"`
 }
 
-type KeybaseTeamDispatcher struct {
-}
-
-func (k *KeybaseTeamDispatcher) Handle(ctx context.Context, msg string) error {
-	// Mock implementation
-	return nil
-}
-
-type BotState struct {
-	LastMessageID uint64 `json:"lastMessageId"`
-	Channel       string `json:"channel,omitempty"`
-}
-
 var version = "dev"
+
+// handlerAdapter wraps *handler.MessageHandler to satisfy server.MessageDispatcher
+// (which returns only error) while still allowing main.go to call the full
+// Handle method directly to obtain handler.Result for reply acknowledgements.
+type handlerAdapter struct{ h *handler.MessageHandler }
+
+func (a *handlerAdapter) Handle(ctx context.Context, msg string) error {
+	_, err := a.h.Handle(ctx, msg)
+	return err
+}
 
 func main() {
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
-	configPath := flag.String("config", "", "Path to a JSON config file (e.g., in KBFS) to override other flags")
+	configPath := flag.String("config", "", "Path to a JSON config file to override other flags")
 	vaultPath := flag.String("vault", "", "Path to the Obsidian Vault")
 	botProfile := flag.String("bot-profile", "", "SimpleX Bot Profile Name")
 	simplexPort := flag.Int("simplex-port", 5225, "SimpleX chat websocket daemon port")
@@ -107,7 +104,7 @@ func main() {
 		log.Fatal("No configuration arguments provided. Please run explicitly with -setup to launch the configuration wizard, or provide required flags.")
 	}
 
-	// Parse config from KBFS or other file if provided
+	// Parse config from file if provided
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath) //nolint:gosec // path is a user-supplied CLI flag
 		if err != nil {
@@ -213,7 +210,7 @@ func main() {
 		log.Printf("MCP client initialized successfully.")
 
 		msgHandler = handler.NewMessageHandler(*vaultPath, mcpClient)
-		dispatcher = msgHandler
+		dispatcher = &handlerAdapter{h: msgHandler}
 
 		if *syncRemote != "" {
 			driveSync := syncpkg.NewDriveSync(*vaultPath, *syncRemote, *syncInterval)
@@ -221,16 +218,8 @@ func main() {
 		}
 	}
 
-	if isStandalone || isIngestor {
-		if dispatcher == nil {
-			dispatcher = msgHandler
-		}
-		httpServer = server.StartWebhookServer(*webhookPort, *webhookSecret, dispatcher)
-	}
-
-	// --- SimpleX daemon + listener ---
-	// The SimpleX WebSocket is the primary channel for Android client → vault communication.
-	// It is required for standalone and executor roles.
+	// --- SimpleX daemon ---
+	// Started early so it is available for IngestorDispatcher construction below.
 	simplexClient, err := simplex.NewClient(ctx, profileDir, *simplexPort)
 	if err != nil {
 		log.Fatalf("Failed to start SimpleX client: %v", err)
@@ -241,6 +230,18 @@ func main() {
 		}
 	}()
 
+	if isStandalone || isIngestor {
+		if isIngestor {
+			// Wire the IngestorDispatcher so webhook payloads are forwarded to the
+			// Executor over SimpleX instead of being silently dropped.
+			dispatcher = server.NewIngestorDispatcher(simplexClient, *executorAddressFlag)
+		}
+		if dispatcher == nil {
+			dispatcher = &handlerAdapter{h: msgHandler}
+		}
+		httpServer = server.StartWebhookServer(*webhookPort, *webhookSecret, dispatcher)
+	}
+
 	if isStandalone || isExecutor {
 		go func() {
 			err := simplexClient.Listen(func(msg simplex.IncomingMessage) {
@@ -249,8 +250,19 @@ func main() {
 					return
 				}
 				log.Infof("SimpleX message from %s: %s", msg.SenderName, msg.Text)
-				if err := dispatcher.Handle(ctx, msg.Text); err != nil {
+				// Call msgHandler directly (not through the interface) to obtain the
+				// destination file for the acknowledgement reply.
+				result, err := msgHandler.Handle(ctx, msg.Text)
+				if err != nil {
 					log.Errorf("Failed to handle message: %v", err)
+					if replyErr := simplexClient.Reply(msg.SenderName, "❌ Error: "+err.Error()); replyErr != nil {
+						log.Warnf("Failed to send error reply: %v", replyErr)
+					}
+				} else {
+					ack := "✅ Saved to " + result.DestFile
+					if replyErr := simplexClient.Reply(msg.SenderName, ack); replyErr != nil {
+						log.Warnf("Failed to send acknowledgement: %v", replyErr)
+					}
 				}
 			})
 			if err != nil {
